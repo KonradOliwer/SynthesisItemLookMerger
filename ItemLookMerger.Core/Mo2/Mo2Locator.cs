@@ -3,16 +3,20 @@ using Mutagen.Bethesda.Plugins;
 
 namespace ItemLookMerger.Core.Mo2;
 
-/// <summary>What Synthesis saw of the game: the Data folder and the enabled plugins of the load order (without the patch).</summary>
-public sealed record LoadOrderFacts(string DataFolder, IReadOnlyList<ModKey> EnabledPlugins);
+/// <summary>What Synthesis saw of the game: the Data folder, the enabled plugins of its load order and the patch.</summary>
+/// <param name="EnabledPlugins">
+/// The enabled plugins of Synthesis's full listing (<c>RawLoadOrder</c>) in order, including those after the patch's line (which
+/// Synthesis trims from <c>LoadOrder</c>), without the patch and without repeats.
+/// </param>
+public sealed record LoadOrderFacts(string DataFolder, IReadOnlyList<ModKey> EnabledPlugins, ModKey Patch);
 
 /// <summary>
 /// Finds the MO2 instance and profile this run was launched from. MO2 is mandatory: without one the run fails, there is no fallback.
 /// <para>
 /// MO2 tells a launched program neither its instance nor its profile, so every possible pair is collected and checked against what
-/// Synthesis actually loaded: the portable instance next to ModOrganizer.exe, the registry's current global instance and every global
+/// Synthesis actually listed: the portable instance next to ModOrganizer.exe, the registry's current global instance and every global
 /// instance in %LOCALAPPDATA%\ModOrganizer for the same game, each with all its profiles. A pair is kept only when its plugins.txt
-/// has exactly the load order's plugins active and each of them comes from an enabled mod of the profile or the game's Data folder.
+/// has exactly Synthesis's enabled plugins active and each of them comes from an enabled mod of the profile or the game's Data folder.
 /// The run goes on only when exactly one pair is kept (or several that are the same profile copied, with an identical modlist.txt).
 /// </para>
 /// </summary>
@@ -138,23 +142,31 @@ public static class Mo2Locator
         return holders;
     }
 
-    /// <summary>Why the profile does not match the load order, or null when it does.</summary>
+    /// <summary>
+    /// Why the profile does not match the load order, or null when it does: the profile's active plugins and Synthesis's enabled
+    /// plugins (its full listing, so also those below the patch's line) must be the same plugins in the same order. The patch is
+    /// left out on both sides, as are the base masters and the plugins no mod holds (the game's own, Creation Club), which
+    /// Synthesis adds or drops itself.
+    /// </summary>
     private static string? Mismatch(
         Mo2Instance instance, LoadOrderFacts facts, Dictionary<string, List<string>> holders, IFileSystem fileSystem, string dataFolder)
     {
-        if (instance.ActivePlugins == null) return "it has no plugins.txt.";
+        if (instance.Plugins == null) return "it has no plugins.txt.";
         var enabledMods = instance.Mods.Where(mod => mod.Enabled).Select(mod => mod.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var active = instance.ActivePlugins.ToHashSet();
-        var loaded = facts.EnabledPlugins.ToHashSet();
+        bool Compared(ModKey plugin) => plugin != facts.Patch && !BaseMasters.Contains(plugin) && holders.ContainsKey(plugin.FileName);
+        var active = instance.ActivePlugins(facts.Patch);
+        var profile = active.Where(Compared).ToList();
+        var synthesis = facts.EnabledPlugins.Where(Compared).Distinct().ToList();
 
-        var notLoaded = active.Where(plugin => !loaded.Contains(plugin)).ToList();
+        var notLoaded = profile.Except(synthesis).ToList();
         if (notLoaded.Count > 0) return $"its plugins.txt has {List(notLoaded)} active, which Synthesis's load order does not.";
-        // The load order may hold more: the base game and Creation Club plugins, which plugins.txt leaves out. A base master may also
-        // sit in a mod (a cleaned copy), but any other plugin a mod holds must be active in the profile.
-        var notActive = loaded
-            .Where(plugin => !active.Contains(plugin) && !BaseMasters.Contains(plugin) && holders.ContainsKey(plugin.FileName))
-            .ToList();
+        var notActive = synthesis.Except(profile).ToList();
         if (notActive.Count > 0) return $"{List(notActive)} {(notActive.Count == 1 ? "is" : "are")} in Synthesis's load order but not active in this profile.";
+        var reordered = profile.Zip(synthesis)
+            .Where(pair => pair.First != pair.Second)
+            .Select(pair => $"{pair.First} where Synthesis has {pair.Second}")
+            .FirstOrDefault();
+        if (reordered != null) return $"its plugins.txt has the same plugins active, in another order ({reordered}).";
 
         foreach (var plugin in active)
         {

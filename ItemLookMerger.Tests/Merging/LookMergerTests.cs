@@ -15,11 +15,11 @@ public class LookMergerTests
 
     /// <summary>Content merging off: the patch may keep the look plugins as masters.</summary>
     private MergeResult Merge(IReadOnlyList<ISkyrimModGetter> loadOrder, bool forwardNames, params LookSource[] sources) =>
-        LookMerger.Merge(loadOrder, _plugins.Patch, sources, forwardNames, selfContained: false, _log);
+        LookMerger.Merge(loadOrder, _plugins.Patch, sources, forwardNames, selfContained: false, TypeDiscrepancyHandling.TakeVisualModWeaponType, _log);
 
     /// <summary>Content merging on: the patch must not need any look plugin.</summary>
     private MergeResult MergeSelfContained(IReadOnlyList<ISkyrimModGetter> loadOrder, params LookSource[] sources) =>
-        LookMerger.Merge(loadOrder, _plugins.Patch, sources, forwardNames: false, selfContained: true, _log);
+        LookMerger.Merge(loadOrder, _plugins.Patch, sources, forwardNames: false, selfContained: true, TypeDiscrepancyHandling.TakeVisualModWeaponType, _log);
 
     private static string? GroundModel(IArmorGetter armor) => armor.WorldModel?.Male?.Model?.File.GivenPath;
 
@@ -39,15 +39,17 @@ public class LookMergerTests
         Assert.Equal(500u, patched.Value);
         Assert.Equal("Iron Armor", patched.Name?.String);
         Assert.Equal(@"Armor\Fancy\Fancy_go.nif", GroundModel(patched));
-        Assert.Equal(look.ArmorAddons.Single().FormKey, Assert.Single(patched.Armature).FormKey);
+        // Even without merging the addon the look added is a new record in the patch, not the look plugin's own.
+        var addon = Assert.Single(_plugins.Patch.ArmorAddons);
+        Assert.Equal(addon.FormKey, Assert.Single(patched.Armature).FormKey);
+        Assert.Equal(_plugins.Patch.ModKey, addon.FormKey.ModKey);
 
         var change = Assert.Single(result.Changes);
         Assert.Equal(new[] { look.ModKey }, change.LookPlugins);
         Assert.Equal(_plugins.Stats.ModKey, change.StatsPlugin);
-        Assert.Equal(new[] { "WorldModel", "Armature" }, change.Fields);
+        Assert.Equal(new[] { "WorldModel", "Armature", "ARMA FancyAA [000801:Look.esp]", "TXST FancyTXST [000800:Look.esp]" }, change.Fields);
         Assert.False(change.WholeRecord);
-        // Without merging nothing is copied, but the look assets are still collected; never the stats side's.
-        Assert.Equal(0, result.DuplicatedRecords);
+        Assert.Equal(2, result.DuplicatedRecords);
         var assets = result.Assets.Select(asset => asset.Path).ToList();
         Assert.Contains(@"Meshes\Armor\Fancy\Fancy_go.nif", assets);
         Assert.Contains(@"Textures\Armor\Fancy\Fancy_d.dds", assets);
@@ -171,7 +173,7 @@ public class LookMergerTests
         Assert.Equal(77u, sword.BasicStats?.Value);
         Assert.Equal(@"Weapons\Fancy\sword.nif", sword.Model?.File.GivenPath);
         Assert.Equal(_plugins.Patch.ModKey, sword.FirstPersonModel.FormKey.ModKey);
-        Assert.Equal(firstPerson.EditorID, _plugins.Patch.Statics.Single().EditorID);
+        Assert.Equal(firstPerson.EditorID + "_ILM", _plugins.Patch.Statics.Single().EditorID);
 
         Assert.Equal(3, result.DuplicatedRecords);
         Assert.DoesNotContain(PatchFormKeysAndLinks(), formKey => formKey.ModKey == look.ModKey);
@@ -207,7 +209,7 @@ public class LookMergerTests
         Assert.Equal(999u, patched.Value);
         Assert.Equal(baseKeyword.FormKey, Assert.Single(patched.Keywords!).FormKey);
         Assert.Empty(_plugins.Patch.Keywords);
-        Assert.Contains(_log.Warnings, warning => warning.Contains("FancyGem") && warning.Contains("Keywords") && warning.Contains("stats side's value is kept"));
+        Assert.Contains(_log.Warnings, warning => warning.Contains("FancyGem") && warning.Contains("Keywords") && warning.Contains("takes the stats side's value"));
         Assert.DoesNotContain(PatchFormKeysAndLinks(), formKey => formKey.ModKey == look.ModKey);
     }
 
@@ -238,74 +240,6 @@ public class LookMergerTests
 
         Assert.Contains("must not need a look plugin as a master", ex.Message);
         Assert.Contains($"EarlierPatcherList [{_plugins.Patch.FormLists.Single().FormKey}] -> {lookKeyword.FormKey}", ex.Message);
-    }
-
-    [Fact]
-    public void An_override_of_a_vanilla_armor_addon_is_forwarded_keeping_its_stats_side_fields_and_credits_the_item()
-    {
-        var race = new FormKey(_plugins.Base.ModKey, 0x000900);
-        _plugins.Stats.ArmorAddons.GetOrAddAsOverride(_plugins.BaseAddon).Race.SetTo(race);
-        var look = TestPlugins.NewMod("Retexture.esp");
-        var lookAddon = look.ArmorAddons.GetOrAddAsOverride(_plugins.BaseAddon);
-        lookAddon.WorldModel = new GenderedItem<Model?>(new Model { File = @"Armor\Better\cuirass_1.nif" }, null);
-        lookAddon.Race.SetTo(new FormKey(_plugins.Base.ModKey, 0x000901));
-
-        var result = MergeSelfContained(_plugins.LoadOrder(look), new LookSource(look, "Retexture Mod"));
-
-        // The armor itself is unchanged, so only its addon is overridden.
-        Assert.Empty(_plugins.Patch.Armors);
-        var addon = Assert.Single(_plugins.Patch.ArmorAddons);
-        Assert.Equal(_plugins.BaseAddon.FormKey, addon.FormKey);
-        Assert.Equal(@"Armor\Better\cuirass_1.nif", addon.WorldModel?.Male?.File.GivenPath);
-        Assert.Equal(race, addon.Race.FormKey);
-        var change = Assert.Single(result.Changes);
-        Assert.Equal(_plugins.Cuirass.FormKey, change.FormKey);
-        Assert.Equal(new[] { look.ModKey }, change.LookPlugins);
-        Assert.Equal(_plugins.Stats.ModKey, change.StatsPlugin);
-        Assert.Contains(change.Fields, field => field.StartsWith("ARMA IronCuirassAA", StringComparison.Ordinal));
-        Assert.Equal(1, result.ForwardedLookRecords);
-        var assets = result.Assets.Select(asset => asset.Path).ToList();
-        Assert.Contains(@"Meshes\Armor\Better\cuirass_1.nif", assets);
-        // The other weight's mesh is inferred: the game loads both.
-        Assert.Contains(@"Meshes\Armor\Better\cuirass_0.nif", assets);
-    }
-
-    [Fact]
-    public void Overrides_of_vanilla_texture_sets_statics_and_projectiles_are_forwarded()
-    {
-        var textureSet = _plugins.Base.TextureSets.AddNew("IronTXST");
-        textureSet.Diffuse = @"Armor\Iron\iron_d.dds";
-        _plugins.BaseAddon.WorldModel!.Male!.AlternateTextures = [new AlternateTexture { Name = "Body", Index = 0, NewTexture = textureSet.ToLink() }];
-        var firstPerson = _plugins.Base.Statics.AddNew("IronSword1st");
-        firstPerson.Model = new Model { File = @"Weapons\Iron\sword_1st.nif" };
-        _plugins.Sword.FirstPersonModel.SetTo(firstPerson);
-        // Stats.esp copied the sword before; its winning version uses the static too.
-        _plugins.Stats.Weapons.Single().FirstPersonModel.SetTo(firstPerson);
-        var projectile = _plugins.Base.Projectiles.AddNew("IronArrowProjectile");
-        projectile.Model = new Model { File = @"Weapons\Iron\arrow_flight.nif" };
-        projectile.Speed = 5000;
-        var arrow = _plugins.Base.Ammunitions.AddNew("IronArrow");
-        arrow.Projectile.SetTo(projectile);
-
-        var look = TestPlugins.NewMod("Retexture.esp");
-        look.TextureSets.GetOrAddAsOverride(textureSet).Diffuse = @"Armor\Better\iron_d.dds";
-        look.Statics.GetOrAddAsOverride(firstPerson).Model = new Model { File = @"Weapons\Better\sword_1st.nif" };
-        var lookProjectile = look.Projectiles.GetOrAddAsOverride(projectile);
-        lookProjectile.Model = new Model { File = @"Weapons\Better\arrow_flight.nif" };
-        lookProjectile.Speed = 1;
-
-        var result = MergeSelfContained(_plugins.LoadOrder(look), new LookSource(look, null));
-
-        Assert.Equal(@"Armor\Better\iron_d.dds", Assert.Single(_plugins.Patch.TextureSets).Diffuse?.GivenPath);
-        Assert.Equal(@"Weapons\Better\sword_1st.nif", Assert.Single(_plugins.Patch.Statics).Model?.File.GivenPath);
-        var patchedProjectile = Assert.Single(_plugins.Patch.Projectiles);
-        Assert.Equal(@"Weapons\Better\arrow_flight.nif", patchedProjectile.Model?.File.GivenPath);
-        Assert.Equal(5000f, patchedProjectile.Speed);
-        Assert.Equal(
-            new[] { _plugins.Cuirass.FormKey, _plugins.Sword.FormKey, arrow.FormKey }.Order(),
-            result.Changes.Select(change => change.FormKey).Order());
-        Assert.Empty(_plugins.Patch.Armors);
-        Assert.Empty(_plugins.Patch.Weapons);
     }
 
     [Fact]

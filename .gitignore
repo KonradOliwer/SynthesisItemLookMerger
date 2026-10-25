@@ -35,9 +35,6 @@ desktop.ini
 *.snupkg
 
 # Local agent configuration and notes
-PLAN.md
-CLAUDE.md
-CLAUDE.local.md
 .claude/
 .mcp.json
 .cocoindex_code/

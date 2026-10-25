@@ -40,17 +40,24 @@ public static class Program
             .Select(listing => listing.Mod)
             .WhereNotNull()
             .ToList();
+        // The full listing, not the trimmed LoadOrder: it also holds the plugins below the patch's line. The patch may be listed and appended.
+        var enabledPlugins = state.RawLoadOrder
+            .Where(listing => listing.Enabled && listing.ModKey != state.PatchMod.ModKey)
+            .Select(listing => listing.ModKey)
+            .Distinct()
+            .ToList();
         var merging = settings.ContentMerging ?? new ContentMergingSettings();
         var options = new MergeOptions(
             settings.PluginsToForward ?? [],
             settings.ForwardNames,
             settings.VerboseLogging,
             merging.AllowMerging,
-            merging.ForwardFolderName);
+            merging.ForwardFolderName,
+            settings.InCaseOfTypeDiscrepancy);
         try
         {
             PatchRun.Run(new RunInputs(
-                loadOrder, state.PatchMod, state.OutputPath.Path, state.DataFolderPath.Path, options, mo2Environment, fileSystem,
+                loadOrder, enabledPlugins, state.PatchMod, state.OutputPath.Path, state.DataFolderPath.Path, options, mo2Environment, fileSystem,
                 new ConsoleLog(settings.VerboseLogging)));
         }
         catch (RunFailedException ex)

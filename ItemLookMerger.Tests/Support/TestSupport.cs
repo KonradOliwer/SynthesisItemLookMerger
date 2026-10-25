@@ -88,12 +88,15 @@ internal static class Mo2Fixtures
 
     /// <summary>
     /// Makes the portable profile match <paramref name="loadOrder"/>: all of it active in plugins.txt, and each plugin no mod holds
-    /// put into the game's Data folder.
+    /// put into the game's Data folder. <paramref name="linesAfter"/> follows in plugins.txt (the patch's line and what comes below it,
+    /// which Synthesis leaves out of its load order).
     /// </summary>
-    public static void MatchPortableProfile(MockFileSystem fileSystem, IEnumerable<ModKey> loadOrder)
+    public static void MatchPortableProfile(MockFileSystem fileSystem, IEnumerable<ModKey> loadOrder, string linesAfter = "")
     {
         var plugins = loadOrder.ToList();
-        fileSystem.AddFile(Path.Combine(PortableProfile, "plugins.txt"), new MockFileData(string.Concat(plugins.Select(plugin => $"*{plugin.FileName}\r\n"))));
+        fileSystem.AddFile(
+            Path.Combine(PortableProfile, "plugins.txt"),
+            new MockFileData(string.Concat(plugins.Select(plugin => $"*{plugin.FileName}\r\n")) + linesAfter));
         foreach (var plugin in plugins)
         {
             var held = fileSystem.Directory.EnumerateDirectories(PortableMods).Any(mod => fileSystem.File.Exists(Path.Combine(mod, plugin.FileName)));

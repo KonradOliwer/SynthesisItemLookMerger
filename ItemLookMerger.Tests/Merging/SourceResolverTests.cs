@@ -67,6 +67,26 @@ public class SourceResolverTests
     }
 
     [Fact]
+    public void A_plugin_active_after_the_patch_fails_with_its_own_message_next_to_a_not_enabled_one()
+    {
+        var relics = ModKey.FromFileName("Relics of Skyrim.esm");
+        var inactive = ModKey.FromFileName("Inactive.esp");
+        var unlisted = ModKey.FromFileName("Unlisted.esp");
+        // Relics of Skyrim.esm is active below the patch's line, so Synthesis's load order (cut there) leaves it out; Inactive.esp is
+        // listed but not active, Unlisted.esp not listed at all.
+        _fileSystem.AddFile(
+            Path.Combine(Mo2Fixtures.PortableProfile, "plugins.txt"),
+            new MockFileData($"*BetterIron.esp\r\nInactive.esp\r\n*Stats.esp\r\n{_plugins.Patch.ModKey}\r\n*Relics of Skyrim.esm\r\n"));
+
+        var ex = Assert.Throws<RunFailedException>(() => Resolve(_plugins.LoadOrder(), _plugins.Stats.ModKey, relics, inactive, unlisted));
+
+        var lines = ex.Message.Split('\n');
+        Assert.Contains(lines, line => line.Contains($"Relics of Skyrim.esm is after {_plugins.Patch.ModKey} in the load order")
+            && line.Contains($"Move {_plugins.Patch.ModKey} below it"));
+        Assert.Contains(lines, line => line.Contains("Inactive.esp, Unlisted.esp are not enabled") && !line.Contains("Relics"));
+    }
+
+    [Fact]
     public void An_empty_list_fails_the_run()
     {
         var ex = Assert.Throws<RunFailedException>(() => Resolve(_plugins.LoadOrder(), ModKey.Null));

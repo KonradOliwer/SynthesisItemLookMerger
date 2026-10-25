@@ -85,7 +85,7 @@ public sealed class Mo2Instance
     internal static readonly string[] PluginExtensions = [".esm", ".esp", ".esl"];
 
     private Mo2Instance(
-        IFileSystem fileSystem, Mo2InstanceFolders folders, string profileName, string modListPath, string modListText, IReadOnlyList<ModListEntry> mods, IReadOnlyList<ModKey>? activePlugins)
+        IFileSystem fileSystem, Mo2InstanceFolders folders, string profileName, string modListPath, string modListText, IReadOnlyList<ModListEntry> mods, IReadOnlyList<PluginEntry>? plugins)
     {
         _fileSystem = fileSystem;
         Folders = folders;
@@ -93,7 +93,7 @@ public sealed class Mo2Instance
         ModListPath = modListPath;
         ModListText = modListText;
         Mods = mods;
-        ActivePlugins = activePlugins;
+        Plugins = plugins;
     }
 
     public Mo2InstanceFolders Folders { get; }
@@ -120,8 +120,16 @@ public sealed class Mo2Instance
     /// <summary>Overwrite first (it beats every mod), then the managed mods of the profile in modlist.txt order (highest priority first).</summary>
     public IReadOnlyList<ModListEntry> Mods { get; }
 
-    /// <summary>The plugins the profile's plugins.txt marks active, or null without a plugins.txt.</summary>
-    public IReadOnlyList<ModKey>? ActivePlugins { get; }
+    /// <summary>The profile's plugins.txt lines in load order, active or not, or null without a plugins.txt.</summary>
+    public IReadOnlyList<PluginEntry>? Plugins { get; }
+
+    /// <summary>The profile's active plugins in load order, without <paramref name="patch"/> (listed or not) and without repeats.</summary>
+    public IReadOnlyList<ModKey> ActivePlugins(ModKey patch) =>
+        (Plugins ?? []).Where(entry => entry.Active && entry.Plugin != patch).Select(entry => entry.Plugin).Distinct().ToList();
+
+    /// <summary>Whether <paramref name="plugin"/> is active in plugins.txt but below <paramref name="patch"/>'s line, so Synthesis leaves it out.</summary>
+    public bool IsActiveAfter(ModKey plugin, ModKey patch) =>
+        (Plugins ?? []).SkipWhile(entry => entry.Plugin != patch).Skip(1).Any(entry => entry.Active && entry.Plugin == plugin);
 
     /// <summary>Reads <paramref name="profileName"/> of the instance; fails the run when its modlist.txt is missing.</summary>
     public static Mo2Instance Load(IFileSystem fileSystem, Mo2InstanceFolders folders, string profileName)
@@ -131,9 +139,9 @@ public sealed class Mo2Instance
         if (!fileSystem.File.Exists(modListPath)) throw new RunFailedException($"The MO2 profile's modlist.txt is missing: {modListPath}");
         var modListText = fileSystem.File.ReadAllText(modListPath);
         var pluginsPath = fileSystem.Path.Combine(profileFolder, "plugins.txt");
-        var active = fileSystem.File.Exists(pluginsPath) ? PluginsTxt.ActivePlugins(fileSystem.File.ReadAllText(pluginsPath)) : null;
+        var plugins = fileSystem.File.Exists(pluginsPath) ? PluginsTxt.Entries(fileSystem.File.ReadAllText(pluginsPath)) : null;
         IReadOnlyList<ModListEntry> mods = [new ModListEntry(OverwriteName, true, -1), .. ModList.Parse(modListText)];
-        return new Mo2Instance(fileSystem, folders, profileName, modListPath, modListText, mods, active);
+        return new Mo2Instance(fileSystem, folders, profileName, modListPath, modListText, mods, plugins);
     }
 
     /// <summary>Reads the instance in <paramref name="instanceDirectory"/> with its selected profile (or "Default").</summary>

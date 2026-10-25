@@ -109,6 +109,27 @@ internal static class LookFields
     }
 
     /// <summary>
+    /// The fields of an item that link to the forms its look depends on (visual records): the look fields and the links the item
+    /// keeps from its stats side (an arrow's projectile, a weapon's impact data). Links in them are pointed at the copies.
+    /// </summary>
+    public static readonly IReadOnlyList<string> LinkFieldNames =
+    [
+        "Model", "WorldModel", "Armature", "ScopeModel", "FirstPersonModel", "InventoryArt", "Projectile", "ImpactDataSet", "BlockBashImpact",
+    ];
+
+    /// <summary>The links an item keeps from its stats side that lead to visual records: an arrow's projectile, a weapon's impact data.</summary>
+    public static IEnumerable<IFormLinkGetter> DependencyLinks(IMajorRecordGetter item)
+    {
+        IEnumerable<IFormLinkGetter> links = item switch
+        {
+            IAmmunitionGetter ammo => [ammo.Projectile],
+            IWeaponGetter weapon => [weapon.ImpactDataSet, weapon.BlockBashImpact],
+            _ => [],
+        };
+        return links.Where(link => !link.IsNull);
+    }
+
+    /// <summary>
     /// Whether two models show the same: same mesh (ignoring case) and the same alternate textures. The MODT hash data is ignored,
     /// as different editors save different hashes for the same mesh.
     /// </summary>

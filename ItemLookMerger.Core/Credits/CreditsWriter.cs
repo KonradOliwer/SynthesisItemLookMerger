@@ -9,8 +9,8 @@ namespace ItemLookMerger.Core.Credits;
 public sealed record PluginOrigin(ModKey Plugin, string? ModName, ModMeta? Meta);
 
 /// <summary>
-/// Step 7: CREDITS.md. One row per changed item with its look side (every look plugin it takes looks from, its own and those of its
-/// armor addons, texture sets, statics and projectiles) and its stats side, then every mod involved with its
+/// Step 7: CREDITS.md. One row per changed item with its look side (every look plugin it takes looks from, its own and those of the
+/// forms its look depends on) and its stats side, then every mod involved with its
 /// download facts. Base-game plugins and mods without a meta.ini are listed by plugin name only.
 /// </summary>
 internal static class CreditsWriter
@@ -20,7 +20,7 @@ internal static class CreditsWriter
     public static string Build(IReadOnlyList<ChangedItem> changes, Func<ModKey, PluginOrigin> originOf)
     {
         var origins = changes
-            .SelectMany(change => change.LookPlugins.Append(change.StatsPlugin))
+            .SelectMany(change => change.LookPlugins.Append(change.StatsPlugin).Concat(change.Base is { } baseItem ? new[] { baseItem.StatsPlugin } : Array.Empty<ModKey>()))
             .Distinct()
             .ToDictionary(plugin => plugin, originOf);
 
@@ -36,7 +36,7 @@ internal static class CreditsWriter
         foreach (var change in changes)
         {
             text.AppendLine(
-                $"| {Cell(change.EditorID)} | {Cell(change.Name)} | `{change.FormKey}` | {string.Join(", ", change.LookPlugins.Select(plugin => Side(origins[plugin])))} | {Side(origins[change.StatsPlugin])} |");
+                $"| {Cell(change.EditorID)} | {Cell(change.Name)} | `{change.FormKey}` | {string.Join(", ", change.LookPlugins.Select(plugin => Side(origins[plugin])))} | {StatsCell(change, origins)} |");
         }
 
         var withDetails = origins.Values
@@ -87,6 +87,12 @@ internal static class CreditsWriter
         var mod = mo2.FindModWithFile(plugin.FileName);
         return mod == null ? new PluginOrigin(plugin, null, null) : new PluginOrigin(plugin, mod.Name, mo2.ReadMeta(mod.Name));
     }
+
+    /// <summary>The stats side; for a weapon that took its type from a base item, also that item and where its stats come from.</summary>
+    private static string StatsCell(ChangedItem change, IReadOnlyDictionary<ModKey, PluginOrigin> origins) =>
+        change.Base is not { } baseItem
+            ? Side(origins[change.StatsPlugin])
+            : $"{Side(origins[change.StatsPlugin])}; weapon type stats from {Cell(baseItem.EditorID)} `{baseItem.FormKey}` ({Side(origins[baseItem.StatsPlugin])})";
 
     private static string Side(PluginOrigin origin) =>
         origin.ModName == null ? Cell(origin.Plugin.FileName) : $"{Cell(origin.Plugin.FileName)} ({Cell(origin.ModName)})";

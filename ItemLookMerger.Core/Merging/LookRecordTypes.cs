@@ -1,134 +1,121 @@
+using System.Collections;
+using System.Reflection;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Assets;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
-using Mutagen.Bethesda.Skyrim.Assets;
 using Noggog;
 
 namespace ItemLookMerger.Core.Merging;
 
 /// <summary>
-/// A record type that holds look content for items: armor addons (ARMA), texture sets (TXST), statics (STAT, first person and
-/// inventory art) and projectiles (PROJ, the flying arrow). A look plugin's override of such a record is forwarded like an item's look:
-/// its look fields go onto the stats side's version, the rest (ARMA races and priorities, projectile speed, ...) stays.
+/// A record type with visual fields: a form of this type that an item's look depends on is carried into the patch as a copy with the
+/// look plugin's visual fields (see <see cref="Fields"/>). The fields are named after the Mutagen properties of the record, so
+/// they are read, compared and copied by name. Sounds, gameplay data and everything that decides what a record does stay out.
 /// </summary>
 internal sealed class LookRecordType
 {
     private readonly Func<ISkyrimModGetter, FormKey, IMajorRecordGetter?> _find;
-    private readonly Func<ISkyrimMod, IMajorRecordGetter, IMajorRecord> _getOrAddAsOverride;
+    private readonly Func<ISkyrimMod, IGroup> _patchGroup;
 
     private LookRecordType(
         string signature,
         Type getterType,
-        Func<ISkyrimModGetter, IEnumerable<IMajorRecordGetter>> records,
         Func<ISkyrimModGetter, FormKey, IMajorRecordGetter?> find,
-        Func<ISkyrimMod, IMajorRecordGetter, IMajorRecord> getOrAddAsOverride)
+        Func<ISkyrimMod, IGroup> patchGroup,
+        IReadOnlyList<string> fields,
+        IReadOnlyList<string> copyOnly)
     {
         Signature = signature;
         GetterType = getterType;
-        Records = records;
         _find = find;
-        _getOrAddAsOverride = getOrAddAsOverride;
+        _patchGroup = patchGroup;
+        Fields = fields;
+        _copyOnly = copyOnly;
     }
+
+    /// <summary>Fields that go along with the visual ones but are never compared: hashes and data-length markers the plugin that saved them chose.</summary>
+    private readonly IReadOnlyList<string> _copyOnly;
 
     public string Signature { get; }
 
     public Type GetterType { get; }
 
-    public Func<ISkyrimModGetter, IEnumerable<IMajorRecordGetter>> Records { get; }
+    /// <summary>The names of the visual fields.</summary>
+    public IReadOnlyList<string> Fields { get; }
 
     public IMajorRecordGetter? Find(ISkyrimModGetter mod, FormKey formKey) => _find(mod, formKey);
 
-    public IMajorRecord GetOrAddAsOverride(ISkyrimMod patch, IMajorRecordGetter winner) => _getOrAddAsOverride(patch, winner);
+    public void AddToPatch(ISkyrimMod patch, IMajorRecord record) => _patchGroup(patch).AddUntyped(record);
 
+    /// <summary>
+    /// ARMA: models, weight slider, skin texture, texture swap lists, art object. TXST: all texture paths, decal data, flags. STAT:
+    /// bounds, model, LOD, material, flags. MSTT: model. PROJ: model, muzzle flash model and lights, decal (not the explosion, which
+    /// is gameplay). LIGH: model and the light's look (not the time, not the can-be-carried flag). IPCT: model, decal, texture sets.
+    /// IPDS: its impacts. ARTO: model, type. EFSH, MATO: everything but sounds. DEBR: its models. FLST: its entries (the texture
+    /// swap lists of armor addons).
+    /// </summary>
     public static readonly IReadOnlyList<LookRecordType> All =
     [
-        Of<ArmorAddon, IArmorAddonGetter>("ARMA", mod => mod.ArmorAddons, patch => patch.ArmorAddons),
-        Of<TextureSet, ITextureSetGetter>("TXST", mod => mod.TextureSets, patch => patch.TextureSets),
-        Of<Static, IStaticGetter>("STAT", mod => mod.Statics, patch => patch.Statics),
-        Of<Projectile, IProjectileGetter>("PROJ", mod => mod.Projectiles, patch => patch.Projectiles),
+        Of<ArmorAddon, IArmorAddonGetter>(
+            "ARMA", mod => mod.ArmorAddons, patch => patch.ArmorAddons,
+            "WorldModel", "FirstPersonModel", "WeightSliderEnabled", "SkinTexture", "TextureSwapList", "ArtObject"),
+        Of<TextureSet, ITextureSetGetter>(
+            "TXST", mod => mod.TextureSets, patch => patch.TextureSets,
+            "Diffuse", "NormalOrGloss", "EnvironmentMaskOrSubsurfaceTint", "GlowOrDetailMap", "Height", "Environment", "Multilayer",
+            "BacklightMaskOrSpecular", "Decal", "Flags"),
+        Of<Static, IStaticGetter>(
+            "STAT", mod => mod.Statics, patch => patch.Statics, "ObjectBounds", "Model", "MaxAngle", "Material", "Flags", "Lod"),
+        Of<MoveableStatic, IMoveableStaticGetter>("MSTT", mod => mod.MoveableStatics, patch => patch.MoveableStatics, "Model"),
+        Of<Projectile, IProjectileGetter>(
+            "PROJ", mod => mod.Projectiles, patch => patch.Projectiles,
+            ["Model", "MuzzleFlashModel", "Light", "MuzzleFlash", "DecalData"], ["TextureFilesHashes"]),
+        Of<Light, ILightGetter>(
+            "LIGH", mod => mod.Lights, patch => patch.Lights,
+            "Model", "Radius", "Color", "Flags", "FalloffExponent", "FOV", "NearClip", "FlickerPeriod", "FlickerIntensityAmplitude",
+            "FlickerMovementAmplitude", "FadeValue", "Lens"),
+        Of<Impact, IImpactGetter>(
+            "IPCT", mod => mod.Impacts, patch => patch.Impacts,
+            "Model", "Decal", "TextureSet", "SecondaryTextureSet", "Duration", "Orientation", "AngleThreshold", "PlacementRadius", "NoDecalData"),
+        Of<ImpactDataSet, IImpactDataSetGetter>("IPDS", mod => mod.ImpactDataSets, patch => patch.ImpactDataSets, "Impacts"),
+        Of<ArtObject, IArtObjectGetter>("ARTO", mod => mod.ArtObjects, patch => patch.ArtObjects, "Model", "Type"),
+        Of<EffectShader, IEffectShaderGetter>(
+            "EFSH", mod => mod.EffectShaders, patch => patch.EffectShaders,
+            AllFieldsExcept(typeof(IEffectShaderGetter), "AmbientSound"), DataTypeStates(typeof(IEffectShaderGetter))),
+        Of<MaterialObject, IMaterialObjectGetter>(
+            "MATO", mod => mod.MaterialObjects, patch => patch.MaterialObjects,
+            AllFieldsExcept(typeof(IMaterialObjectGetter)), DataTypeStates(typeof(IMaterialObjectGetter))),
+        Of<Debris, IDebrisGetter>("DEBR", mod => mod.Debris, patch => patch.Debris, "Models"),
+        Of<FormList, IFormListGetter>("FLST", mod => mod.FormLists, patch => patch.FormLists, "Items"),
     ];
 
-    /// <summary>The look record type a link points to, or null for any other type (look links are typed exactly).</summary>
-    public static LookRecordType? ForLink(IFormLinkGetter link) => All.FirstOrDefault(type => type.GetterType == link.Type);
+    /// <summary>The visual record type of a record, or null when its type has no visual fields (items included).</summary>
+    public static LookRecordType? For(IMajorRecordGetter record) => All.FirstOrDefault(type => type.GetterType.IsInstanceOfType(record));
 
-    /// <summary>The look fields that differ between the stats side's and the look source's version; empty when they look the same.</summary>
-    public static IReadOnlyList<string> Differences(IMajorRecordGetter winner, IMajorRecordGetter source)
+    /// <summary>The visual fields that differ between the stats side's and the look plugin's version; empty when they look the same.</summary>
+    public IReadOnlyList<string> Differences(IMajorRecordGetter winner, IMajorRecordGetter look) =>
+        Fields.Where(field => !SameField(winner, look, field)).ToList();
+
+    private static bool SameField(IMajorRecordGetter winner, IMajorRecordGetter look, string field) =>
+        // Whether a light can be carried is gameplay, not look.
+        field == "Flags" && winner is ILightGetter winnerLight && look is ILightGetter lookLight
+            ? (winnerLight.Flags & ~Light.Flag.CanBeCarried) == (lookLight.Flags & ~Light.Flag.CanBeCarried)
+            : SameValue(ValueOf(look, field), ValueOf(winner, field));
+
+    /// <summary>Copies the visual fields of <paramref name="look"/> onto <paramref name="target"/>; links keep their FormKeys.</summary>
+    public void Copy(IMajorRecord target, IMajorRecordGetter look)
     {
-        var differences = new List<string>();
-        void Check(string field, bool same)
-        {
-            if (!same) differences.Add(field);
-        }
-        switch (source, winner)
-        {
-            case (IArmorAddonGetter s, IArmorAddonGetter w):
-                Check("WorldModel", SameGenderedModels(s.WorldModel, w.WorldModel));
-                Check("FirstPersonModel", SameGenderedModels(s.FirstPersonModel, w.FirstPersonModel));
-                Check("SkinTexture", s.SkinTexture?.Male.FormKeyNullable == w.SkinTexture?.Male.FormKeyNullable
-                    && s.SkinTexture?.Female.FormKeyNullable == w.SkinTexture?.Female.FormKeyNullable);
-                Check("TextureSwapList", s.TextureSwapList?.Male.FormKeyNullable == w.TextureSwapList?.Male.FormKeyNullable
-                    && s.TextureSwapList?.Female.FormKeyNullable == w.TextureSwapList?.Female.FormKeyNullable);
-                break;
-            case (ITextureSetGetter s, ITextureSetGetter w):
-                Check("Textures", TexturePaths(s).SequenceEqual(TexturePaths(w), StringComparer.OrdinalIgnoreCase));
-                Check("Decal", Equals(s.Decal, w.Decal));
-                Check("Flags", s.Flags == w.Flags);
-                break;
-            case (IStaticGetter s, IStaticGetter w):
-                Check("Model", LookFields.SameModel(s.Model, w.Model));
-                Check("Lod", Equals(s.Lod, w.Lod));
-                break;
-            case (IProjectileGetter s, IProjectileGetter w):
-                Check("Model", LookFields.SameModel(s.Model, w.Model));
-                Check("MuzzleFlashModel", LookFields.SamePath(s.MuzzleFlashModel, w.MuzzleFlashModel));
-                break;
-        }
-        return differences;
+        var carried = (target as ILight)?.Flags & Light.Flag.CanBeCarried;
+        // The values come from a deep copy, so the look plugin's record is never shared with the patch.
+        var clone = look.Duplicate(look.FormKey);
+        foreach (var field in Fields.Concat(_copyOnly)) SetValue(target, field, ValueOf(clone, field));
+        if (target is ILight light && carried != null) light.Flags = (light.Flags & ~Light.Flag.CanBeCarried) | carried.Value;
     }
 
-    /// <summary>Copies the look fields of <paramref name="source"/> onto <paramref name="target"/>; links keep their FormKeys.</summary>
-    public static void Copy(IMajorRecord target, IMajorRecordGetter source)
-    {
-        switch (target, source)
-        {
-            case (IArmorAddon t, IArmorAddonGetter s):
-                t.WorldModel = CopyGenderedModels(s.WorldModel);
-                t.FirstPersonModel = CopyGenderedModels(s.FirstPersonModel);
-                t.SkinTexture = s.SkinTexture == null
-                    ? null
-                    : new GenderedItem<IFormLinkNullableGetter<ITextureSetGetter>>(
-                        new FormLinkNullable<ITextureSetGetter>(s.SkinTexture.Male.FormKeyNullable),
-                        new FormLinkNullable<ITextureSetGetter>(s.SkinTexture.Female.FormKeyNullable));
-                t.TextureSwapList = s.TextureSwapList == null
-                    ? null
-                    : new GenderedItem<IFormLinkNullableGetter<IFormListGetter>>(
-                        new FormLinkNullable<IFormListGetter>(s.TextureSwapList.Male.FormKeyNullable),
-                        new FormLinkNullable<IFormListGetter>(s.TextureSwapList.Female.FormKeyNullable));
-                break;
-            case (ITextureSet t, ITextureSetGetter s):
-                t.Diffuse = Texture(s.Diffuse);
-                t.NormalOrGloss = Texture(s.NormalOrGloss);
-                t.EnvironmentMaskOrSubsurfaceTint = Texture(s.EnvironmentMaskOrSubsurfaceTint);
-                t.GlowOrDetailMap = Texture(s.GlowOrDetailMap);
-                t.Height = Texture(s.Height);
-                t.Environment = Texture(s.Environment);
-                t.Multilayer = Texture(s.Multilayer);
-                t.BacklightMaskOrSpecular = Texture(s.BacklightMaskOrSpecular);
-                t.Decal = s.Decal?.DeepCopy();
-                t.Flags = s.Flags;
-                break;
-            case (IStatic t, IStaticGetter s):
-                t.Model = s.Model?.DeepCopy();
-                t.Lod = s.Lod?.DeepCopy();
-                break;
-            case (IProjectile t, IProjectileGetter s):
-                t.Model = s.Model?.DeepCopy();
-                t.MuzzleFlashModel.GivenPath = s.MuzzleFlashModel.GivenPath;
-                break;
-        }
-    }
+    /// <summary>The links in the visual fields: the forms the look depends on.</summary>
+    public IEnumerable<IFormLinkGetter> VisualLinks(IMajorRecordGetter record) =>
+        Fields.SelectMany(field => LinksIn(ValueOf(record, field))).Where(link => !link.IsNull);
 
     /// <summary>
     /// The asset paths in the record. For an armor addon also the inferred ones, which add the other weight's mesh
@@ -137,48 +124,168 @@ internal sealed class LookRecordType
     public static IEnumerable<IAssetLinkGetter> AssetLinks(IMajorRecordGetter record) =>
         record.EnumerateAssetLinks(record is IArmorAddonGetter ? AssetLinkQuery.Listed | AssetLinkQuery.Inferred : AssetLinkQuery.Listed);
 
-    /// <summary>The look links of the record to follow further: the texture sets of its models and its skin texture.</summary>
-    public static IEnumerable<IFormLinkGetter> LookLinks(IMajorRecordGetter record)
+    /// <summary>
+    /// The asset paths in the visual fields only (not a destructible's debris model, say). For an armor addon, which has no other
+    /// assets, the same as <see cref="AssetLinks"/>, so the other weight's mesh is there.
+    /// </summary>
+    public IEnumerable<IAssetLinkGetter> VisualAssetLinks(IMajorRecordGetter record) =>
+        record is IArmorAddonGetter ? AssetLinks(record) : Fields.SelectMany(field => AssetsIn(ValueOf(record, field)));
+
+    private static IEnumerable<IAssetLinkGetter> AssetsIn(object? value) => value switch
     {
-        var containers = new List<IFormLinkContainerGetter?>();
-        var links = new List<IFormLinkGetter>();
-        switch (record)
-        {
-            case IArmorAddonGetter addon:
-                containers.AddRange([addon.WorldModel?.Male, addon.WorldModel?.Female, addon.FirstPersonModel?.Male, addon.FirstPersonModel?.Female]);
-                if (addon.SkinTexture != null) links.AddRange([addon.SkinTexture.Male, addon.SkinTexture.Female]);
-                break;
-            case IStaticGetter stat:
-                containers.Add(stat.Model);
-                break;
-            case IProjectileGetter projectile:
-                containers.Add(projectile.Model);
-                break;
-        }
-        return containers.WhereNotNull().SelectMany(container => container.EnumerateFormLinks()).Concat(links).Where(link => !link.IsNull);
+        null or string => [],
+        IAssetLinkGetter link => [link],
+        IAssetLinkContainerGetter container => container.EnumerateAssetLinks(AssetLinkQuery.Listed),
+        IEnumerable items => items.Cast<object?>().SelectMany(AssetsIn),
+        _ => [],
+    };
+
+    /// <summary>Points the links in the named fields of <paramref name="target"/> at the copies in <paramref name="mapping"/>.</summary>
+    public static void RemapFields(IMajorRecord target, IEnumerable<string> fields, IReadOnlyDictionary<FormKey, FormKey> mapping)
+    {
+        foreach (var field in fields) RemapValue(ValueOf(target, field), mapping);
     }
 
-    private static IEnumerable<string> TexturePaths(ITextureSetGetter set) =>
-        new[] { set.Diffuse, set.NormalOrGloss, set.EnvironmentMaskOrSubsurfaceTint, set.GlowOrDetailMap, set.Height, set.Environment, set.Multilayer, set.BacklightMaskOrSpecular }
-            .Select(texture => texture?.GivenPath ?? string.Empty);
+    /// <summary>The form links inside a property value: a link, a link container (models, scripts, effects, ...) or a list of either.</summary>
+    public static IEnumerable<IFormLinkGetter> LinksIn(object? value) => value switch
+    {
+        null or string => [],
+        IFormLinkGetter link => [link],
+        IFormLinkContainerGetter container => container.EnumerateFormLinks(),
+        IEnumerable items => items.Cast<object?>().SelectMany(LinksIn),
+        _ => [],
+    };
 
-    private static AssetLink<SkyrimTextureAssetType>? Texture(IAssetLinkGetter<SkyrimTextureAssetType>? texture) =>
-        texture == null ? null : new AssetLink<SkyrimTextureAssetType>(texture.GivenPath);
+    /// <summary>The value of a property by name, read through the record's own type or its interfaces (binary overlays); null if there is none.</summary>
+    public static object? ValueOf(object record, string name) => FindProperty(record.GetType(), name)?.GetValue(record);
 
-    private static bool SameGenderedModels(IGenderedItemGetter<IModelGetter?>? a, IGenderedItemGetter<IModelGetter?>? b) =>
-        LookFields.SameModel(a?.Male, b?.Male) && LookFields.SameModel(a?.Female, b?.Female);
+    private static PropertyInfo? FindProperty(Type type, string name) =>
+        type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Concat(type.GetInterfaces().SelectMany(contract => contract.GetProperties()))
+            .FirstOrDefault(property => property.Name == name && property.GetIndexParameters().Length == 0);
 
-    private static GenderedItem<Model?>? CopyGenderedModels(IGenderedItemGetter<IModelGetter?>? models) =>
-        models == null ? null : new GenderedItem<Model?>(models.Male?.DeepCopy(), models.Female?.DeepCopy());
+    private static void SetValue(IMajorRecord target, string name, object? value)
+    {
+        var writable = target.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(property => property.Name == name && property.CanWrite && property.GetIndexParameters().Length == 0);
+        if (writable != null)
+        {
+            writable.SetValue(target, value);
+            return;
+        }
+        // Get-only members (lists, links, asset paths) are filled in place.
+        switch (ValueOf(target, name), value)
+        {
+            case (IList list, IEnumerable items):
+                list.Clear();
+                foreach (var item in items) list.Add(item);
+                break;
+            case ({ } link, IFormLinkGetter from) when link is IFormLinkGetter:
+                SetLinkKey(link, from.FormKeyNullable);
+                break;
+            case ({ } asset, IAssetLinkGetter from) when asset is IAssetLinkGetter:
+                SetMember(asset, "GivenPath", from.GivenPath);
+                break;
+        }
+    }
+
+    private static void SetLinkKey(object link, FormKey? formKey) =>
+        link.GetType().GetMethod(nameof(IFormLink<IMajorRecordGetter>.SetTo), [typeof(FormKey?)])!.Invoke(link, [formKey]);
+
+    private static void SetMember(object target, string name, object? value) =>
+        target.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .First(property => property.Name == name && property.CanWrite)
+            .SetValue(target, value);
+
+    private static void RemapValue(object? value, IReadOnlyDictionary<FormKey, FormKey> mapping)
+    {
+        switch (value)
+        {
+            case null or string:
+                break;
+            case IFormLinkGetter link:
+                if (link.FormKeyNullable is { } formKey && mapping.TryGetValue(formKey, out var copy)) SetLinkKey(link, copy);
+                break;
+            case IFormLinkContainer container:
+                container.RemapLinks(mapping);
+                break;
+            case IEnumerable items:
+                foreach (var item in items) RemapValue(item, mapping);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Whether two values look the same: models by mesh and alternate textures (the MODT hash data is ignored), asset paths ignoring
+    /// case, links by FormKey, lists and gendered values entry by entry, anything else by value.
+    /// </summary>
+    private static bool SameValue(object? a, object? b)
+    {
+        switch (a, b)
+        {
+            case (null, null):
+                return true;
+            case (null, _) or (_, null):
+                return false;
+            case (IModelGetter x, IModelGetter y):
+                return LookFields.SameModel(x, y);
+            case (IAssetLinkGetter x, IAssetLinkGetter y):
+                return LookFields.SamePath(x, y);
+            case (IFormLinkGetter x, IFormLinkGetter y):
+                return x.FormKeyNullable == y.FormKeyNullable;
+            case (string, string):
+                return Equals(a, b);
+            case (ReadOnlyMemorySlice<byte> x, ReadOnlyMemorySlice<byte> y):
+                return x.Span.SequenceEqual(y.Span);
+            case (MemorySlice<byte> x, MemorySlice<byte> y):
+                return x.Span.SequenceEqual(y.Span);
+            case (IEnumerable x, IEnumerable y):
+                var left = x.Cast<object?>().ToList();
+                var right = y.Cast<object?>().ToList();
+                return left.Count == right.Count && left.Zip(right).All(pair => SameValue(pair.First, pair.Second));
+            default:
+                return Equals(a, b);
+        }
+    }
+
+    /// <summary>The properties a record type declares itself (its own fields, not the major record header), less <paramref name="except"/>.</summary>
+    private static string[] AllFieldsExcept(Type getterType, params string[] except)
+    {
+        var header = typeof(ISkyrimMajorRecordGetter).GetInterfaces().Append(typeof(ISkyrimMajorRecordGetter))
+            .SelectMany(contract => contract.GetProperties())
+            .Select(property => property.Name)
+            .ToHashSet();
+        return getterType.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Select(property => property.Name)
+            .Where(name => !header.Contains(name) && !except.Contains(name) && !IsDataTypeState(name))
+            .ToArray();
+    }
+
+    /// <summary>Which DATA variant (length) a plugin wrote says nothing about the look; it goes along with the fields but is not compared.</summary>
+    private static bool IsDataTypeState(string name) => name.EndsWith("DataTypeState", StringComparison.Ordinal);
+
+    private static string[] DataTypeStates(Type getterType) =>
+        getterType.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Select(property => property.Name)
+            .Where(IsDataTypeState)
+            .ToArray();
 
     private static LookRecordType Of<TMajor, TGetter>(
-        string signature, Func<ISkyrimModGetter, IGroupGetter<TGetter>> group, Func<ISkyrimMod, IGroup<TMajor>> patchGroup)
+        string signature, Func<ISkyrimModGetter, IGroupGetter<TGetter>> group, Func<ISkyrimMod, IGroup<TMajor>> patchGroup, params string[] fields)
+        where TMajor : class, IMajorRecordInternal, TGetter
+        where TGetter : class, IMajorRecordGetter =>
+        Of<TMajor, TGetter>(signature, group, patchGroup, fields, []);
+
+    private static LookRecordType Of<TMajor, TGetter>(
+        string signature, Func<ISkyrimModGetter, IGroupGetter<TGetter>> group, Func<ISkyrimMod, IGroup<TMajor>> patchGroup, string[] fields,
+        string[] copyOnly)
         where TMajor : class, IMajorRecordInternal, TGetter
         where TGetter : class, IMajorRecordGetter =>
         new(
             signature,
             typeof(TGetter),
-            mod => group(mod),
             (mod, formKey) => group(mod).TryGetValue(formKey, out var record) ? record : null,
-            (patch, winner) => patchGroup(patch).GetOrAddAsOverride<TMajor, TGetter>((TGetter)winner));
+            patch => patchGroup(patch),
+            fields,
+            copyOnly);
 }

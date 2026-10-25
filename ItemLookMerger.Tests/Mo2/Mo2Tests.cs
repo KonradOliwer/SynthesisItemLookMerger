@@ -42,8 +42,11 @@ public class Mo2Tests
     private static readonly string PortableExe = Path.Combine(Mo2Fixtures.PortableFolder, "ModOrganizer.exe");
     private readonly TestLog _log = new();
 
+    private static readonly ModKey Patch = ModKey.FromFileName("VisualMerger.esp");
+
+    /// <summary>Locates with Synthesis's load order being <paramref name="plugins"/>: what plugins.txt has above the patch, never more.</summary>
     private Mo2Instance Locate(IMo2Environment environment, MockFileSystem fileSystem, string dataFolder, IReadOnlyList<ModKey>? plugins = null) =>
-        Mo2Locator.Locate(environment, fileSystem, new LoadOrderFacts(dataFolder, plugins ?? Mo2Fixtures.FixturePlugins), _log);
+        Mo2Locator.Locate(environment, fileSystem, new LoadOrderFacts(dataFolder, plugins ?? Mo2Fixtures.FixturePlugins, Patch), _log);
 
     [Fact]
     public void Portable_instance_is_found_next_to_the_executable_with_default_paths()
@@ -155,6 +158,80 @@ public class Mo2Tests
 
         Assert.Contains("No MO2 instance and profile matches", ex.Message);
         Assert.Contains("Looks.esp", ex.Message);
+    }
+
+    [Fact]
+    public void Plugins_below_the_patch_line_count_because_Synthesis_lists_them_in_full()
+    {
+        // The user's case: plugins.txt lists the patch with an active look plugin below it. Synthesis trims that plugin from its
+        // load order but not from its full listing, which is what the profile is compared with.
+        var fileSystem = Mo2Fixtures.Portable();
+        Mo2Fixtures.AddProfileFiles(fileSystem, @"C:\MO2Portable\profiles\Default", "*BetterIron.esp\r\n*Stats.esp\r\nVisualMerger.esp\r\n*Relics of Skyrim.esp\r\n");
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableMods, "Better Iron Armor", "Relics of Skyrim.esp"), new MockFileData([]));
+        // Another profile has the same plugins in another order.
+        Mo2Fixtures.AddProfileFiles(fileSystem, @"C:\MO2Portable\profiles\Requiemified", "*BetterIron.esp\r\n*Relics of Skyrim.esp\r\n*Stats.esp\r\nVisualMerger.esp\r\n");
+        // The fixture's own profile lacks the look plugin.
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableProfile, "plugins.txt"), new MockFileData("*BetterIron.esp\r\n*Stats.esp\r\n"));
+        IReadOnlyList<ModKey> plugins = [.. Mo2Fixtures.FixturePlugins, ModKey.FromFileName("Relics of Skyrim.esp")];
+
+        var instance = Locate(new FakeMo2Environment(PortableExe), fileSystem, Mo2Fixtures.PortableData, plugins);
+
+        Assert.Equal("Default", instance.ProfileName);
+        Assert.Contains(_log.Verboses, line => line.Contains("profile \"Requiemified\"") && line.Contains("in another order"));
+        Assert.Contains(_log.Verboses, line => line.Contains("profile \"My Profile\"") && line.Contains("Relics of Skyrim.esp is in Synthesis's load order but not active"));
+    }
+
+    [Fact]
+    public void The_patch_listed_twice_inactive_or_appended_by_Synthesis_is_left_out_on_both_sides()
+    {
+        var fileSystem = Mo2Fixtures.Portable();
+        fileSystem.AddFile(
+            Path.Combine(Mo2Fixtures.PortableProfile, "plugins.txt"), new MockFileData("*BetterIron.esp\r\n*VisualMerger.esp\r\n*Stats.esp\r\nVisualMerger.esp\r\n"));
+        IReadOnlyList<ModKey> plugins = [.. Mo2Fixtures.FixturePlugins, Patch, Patch];
+
+        Assert.Equal("My Profile", Locate(new FakeMo2Environment(PortableExe), fileSystem, Mo2Fixtures.PortableData, plugins).ProfileName);
+    }
+
+    [Fact]
+    public void A_plugin_that_is_active_in_the_profile_but_not_in_Synthesis_listing_rejects_the_profile()
+    {
+        // For example a plugin a Synthesis group excludes from the patcher's view.
+        var fileSystem = Mo2Fixtures.Portable();
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableMods, "Base Fixes", "Foreign.esp"), new MockFileData([]));
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableProfile, "plugins.txt"), new MockFileData("*BetterIron.esp\r\n*Foreign.esp\r\n*Stats.esp\r\n"));
+
+        var ex = Assert.Throws<RunFailedException>(() => Locate(new FakeMo2Environment(PortableExe), fileSystem, Mo2Fixtures.PortableData));
+
+        Assert.Contains("Foreign.esp active, which Synthesis's load order does not", ex.Message);
+    }
+
+    [Fact]
+    public void A_disabled_entry_in_plugins_txt_is_not_compared()
+    {
+        var fileSystem = Mo2Fixtures.Portable();
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableProfile, "plugins.txt"), new MockFileData("*BetterIron.esp\r\nLooks.esp\r\n*Stats.esp\r\n"));
+
+        Assert.Equal("My Profile", Locate(new FakeMo2Environment(PortableExe), fileSystem, Mo2Fixtures.PortableData).ProfileName);
+    }
+
+    [Fact]
+    public void A_profile_that_does_not_list_the_patch_is_compared_whole()
+    {
+        var fileSystem = Mo2Fixtures.Portable();
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableProfile, "plugins.txt"), new MockFileData("*BetterIron.esp\r\n*Stats.esp\r\n"));
+
+        Assert.Equal("My Profile", Locate(new FakeMo2Environment(PortableExe), fileSystem, Mo2Fixtures.PortableData).ProfileName);
+    }
+
+    [Fact]
+    public void The_same_plugins_in_another_order_are_rejected()
+    {
+        var fileSystem = Mo2Fixtures.Portable();
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableProfile, "plugins.txt"), new MockFileData("*Stats.esp\r\n*BetterIron.esp\r\nVisualMerger.esp\r\n"));
+
+        var ex = Assert.Throws<RunFailedException>(() => Locate(new FakeMo2Environment(PortableExe), fileSystem, Mo2Fixtures.PortableData));
+
+        Assert.Contains("in another order (Stats.esp where Synthesis has BetterIron.esp)", ex.Message);
     }
 
     [Fact]

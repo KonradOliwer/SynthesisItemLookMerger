@@ -8,6 +8,8 @@
     <RootNamespace>ItemLookMerger.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- Noggog's version generator emits an AssemblyVersions type that the entry project also has. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,6 +26,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ItemLookMerger.Core\ItemLookMerger.Core.csproj" />
+    <!-- The entry project, for its settings class only. -->
+    <ProjectReference Include="..\ItemLookMerger\ItemLookMerger.csproj" />
   </ItemGroup>
 
   <ItemGroup>

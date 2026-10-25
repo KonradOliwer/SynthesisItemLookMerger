@@ -35,5 +35,30 @@ public class CreditsTests
         Assert.Equal(Normalize(snapshot), Normalize(text));
     }
 
+    [Fact]
+    public void A_weapon_that_took_its_type_from_a_base_item_credits_that_item_and_the_plugin_its_stats_come_from()
+    {
+        var baseItem = new BaseItem("IronGreatsword", new FormKey(Skyrim, 0x013986), Swords);
+        var changes = new[]
+        {
+            new ChangedItem(
+                "WEAP", new FormKey(Skyrim, 0x012EB7), "UniqueBlade", "Blade", [Look], Stats, ["Model", "weapon type from IronGreatsword"], Base: baseItem),
+        };
+        var origins = new Dictionary<ModKey, PluginOrigin>
+        {
+            [Look] = new(Look, "Better Iron Armor", null),
+            [Stats] = new(Stats, "Stats Overhaul", null),
+            [Swords] = new(Swords, "Sword Pack", null),
+        };
+
+        var text = CreditsWriter.Build(changes, plugin => origins[plugin]);
+
+        Assert.Contains(
+            "| UniqueBlade | Blade | `012EB7:Skyrim.esm` | BetterIron.esp (Better Iron Armor) | "
+            + "StatsOverhaul.esp (Stats Overhaul); weapon type stats from IronGreatsword `013986:Skyrim.esm` (Swords.esp (Sword Pack)) |",
+            text);
+        Assert.Contains("Swords.esp", text[text.IndexOf("## Mods", StringComparison.Ordinal)..]);
+    }
+
     private static string Normalize(string text) => text.Replace("\r\n", "\n");
 }

@@ -3,16 +3,22 @@ using ItemLookMerger.Core.Assets;
 using ItemLookMerger.Core.Credits;
 using ItemLookMerger.Core.Merging;
 using ItemLookMerger.Core.Mo2;
+using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Skyrim;
 
 namespace ItemLookMerger.Core;
 
 /// <summary>Everything one run works on; the entry project fills it from the Synthesis state.</summary>
 /// <param name="LoadOrder">The enabled plugins of the load order without the patch, lowest priority first (read through the Data folder).</param>
+/// <param name="EnabledPlugins">
+/// The enabled plugins of Synthesis's full listing (<c>RawLoadOrder</c>) without the patch, also those below the patch's line that
+/// <paramref name="LoadOrder"/> lacks. The MO2 profile is verified against them.
+/// </param>
 /// <param name="OutputPath">The patch file Synthesis writes; CREDITS.md goes next to it when merging is off.</param>
 /// <param name="DataFolder">The game's Data folder as Synthesis sees it (under MO2, its virtual view of the enabled mods).</param>
 public sealed record RunInputs(
     IReadOnlyList<ISkyrimModGetter> LoadOrder,
+    IReadOnlyList<ModKey> EnabledPlugins,
     ISkyrimMod Patch,
     string OutputPath,
     string DataFolder,
@@ -31,16 +37,17 @@ public static class PatchRun
         log.Info("=== Item Look Merger ===");
 
         var loadOrderKeys = inputs.LoadOrder.Select(mod => mod.ModKey).ToList();
-        var mo2 = Mo2Locator.Locate(inputs.Mo2Environment, fileSystem, new LoadOrderFacts(inputs.DataFolder, loadOrderKeys), log);
+        // Synthesis's load order stops at the patch, so each profile is compared with its full listing instead.
+        var mo2 = Mo2Locator.Locate(inputs.Mo2Environment, fileSystem, new LoadOrderFacts(inputs.DataFolder, inputs.EnabledPlugins, inputs.Patch.ModKey), log);
         // The name is checked now; the folder's content is only replaced once everything has succeeded, so a failed run leaves it alone.
         string? forwardFolder = null;
         if (options.AllowMerging) forwardFolder = ForwardFolder.Resolve(fileSystem, mo2, options.ForwardFolderName);
         else ForwardFolder.ReportLeftover(fileSystem, mo2, options.ForwardFolderName, log);
 
-        // Fails the run for an empty list or a plugin that isn't enabled, so there is always at least one source past this point.
+        // Fails the run for an empty list or a plugin that isn't loaded, so there is always at least one source past this point.
         var sources = SourceResolver.Resolve(options.PluginsToForward, inputs.LoadOrder, inputs.Patch.ModKey, mo2, log);
         // With merging on, the patch is made independent of the look plugins, so they can be disabled after the run.
-        var result = LookMerger.Merge(inputs.LoadOrder, inputs.Patch, sources, options.ForwardNames, selfContained: options.AllowMerging, log);
+        var result = LookMerger.Merge(inputs.LoadOrder, inputs.Patch, sources, options.ForwardNames, selfContained: options.AllowMerging, options.OnTypeDiscrepancy, log);
         string Credits() => CreditsWriter.Build(result.Changes, plugin => CreditsWriter.Origin(mo2, sources, plugin));
 
         AssetCopyResult? assets = null;
@@ -96,9 +103,20 @@ public static class PatchRun
                 .ToList();
             log.Info($"{source.ModKey}: {(perType.Count == 0 ? "no item changed" : string.Join(", ", perType))}");
         }
+        log.Info($"Items changed: {result.Changes.Count}. Skipped with identical looks: {result.IdenticalSkipped}.");
+        var perCopiedType = result.Copies
+            .GroupBy(copy => copy.Signature)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => $"{group.Key} {group.Count()}")
+            .ToList();
         log.Info(
-            $"Items changed: {result.Changes.Count}. Skipped with identical looks: {result.IdenticalSkipped}. "
-            + $"Look records (ARMA, TXST, STAT, PROJ) forwarded: {result.ForwardedLookRecords}. Look records copied from look plugins: {result.DuplicatedRecords}.");
+            result.Copies.Count == 0
+                ? "Forms the looks depend on copied into the patch: none."
+                : $"Forms the looks depend on copied into the patch: {result.Copies.Count} ({string.Join(", ", perCopiedType)}); "
+                    + $"added by look plugins: {result.DuplicatedRecords}, copies of shared records: {result.ForwardedLookRecords}.");
+        if (result.TypeSkipped > 0) log.Info($"Items left unchanged because of a type discrepancy: {result.TypeSkipped}.");
+        if (result.ArmorTypeKept > 0)
+            log.Info($"Armor whose look has another armor type than the modlist's keeps the modlist's type: {result.ArmorTypeKept} (Verbose logging lists them).");
         log.Info(selfContained
             ? "The patch has no look plugin as a master: you can disable the look mods until the next run (enable them again before it)."
             : "Content merging is off: the patch keeps the look plugins as masters, so they must stay enabled.");

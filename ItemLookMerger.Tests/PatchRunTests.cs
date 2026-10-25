@@ -1,6 +1,7 @@
 using System.IO.Abstractions.TestingHelpers;
 using ItemLookMerger.Core;
 using ItemLookMerger.Core.Assets;
+using ItemLookMerger.Core.Mo2;
 using ItemLookMerger.Tests.Merging;
 using ItemLookMerger.Tests.Support;
 using Mutagen.Bethesda;
@@ -16,12 +17,20 @@ public class PatchRunTests
     private const string ForwardFolderName = "OUTPUT ItemLookMerger";
     private static readonly string Forward = Path.Combine(Mo2Fixtures.PortableMods, ForwardFolderName);
 
-    /// <summary>The run's inputs, with the portable fixture profile made to match the load order (so MO2 detection accepts it).</summary>
-    private static RunInputs Inputs(TestPlugins plugins, IReadOnlyList<ISkyrimModGetter> loadOrder, MockFileSystem fileSystem, MergeOptions options, TestLog log)
+    /// <summary>
+    /// The run's inputs, with the portable fixture profile made to match the load order (so MO2 detection accepts it). The profile's
+    /// plugins.txt goes on with <paramref name="linesAfter"/>, which Synthesis trims from its load order but keeps in its full listing.
+    /// </summary>
+    private static RunInputs Inputs(
+        TestPlugins plugins, IReadOnlyList<ISkyrimModGetter> loadOrder, MockFileSystem fileSystem, MergeOptions options, TestLog log, string linesAfter = "")
     {
         if (fileSystem.Directory.Exists(Mo2Fixtures.PortableProfile))
-            Mo2Fixtures.MatchPortableProfile(fileSystem, loadOrder.Select(mod => mod.ModKey));
-        return new(loadOrder, plugins.Patch, OutputPath, Mo2Fixtures.PortableData, options,
+            Mo2Fixtures.MatchPortableProfile(fileSystem, loadOrder.Select(mod => mod.ModKey), linesAfter);
+        var enabled = loadOrder.Select(mod => mod.ModKey)
+            .Concat(PluginsTxt.Entries(linesAfter).Where(entry => entry.Active && entry.Plugin != plugins.Patch.ModKey).Select(entry => entry.Plugin))
+            .Distinct()
+            .ToList();
+        return new(loadOrder, enabled, plugins.Patch, OutputPath, Mo2Fixtures.PortableData, options,
             new FakeMo2Environment(Path.Combine(Mo2Fixtures.PortableFolder, "ModOrganizer.exe")), fileSystem, log);
     }
 
@@ -89,8 +98,9 @@ public class PatchRunTests
         var result = PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, options, log));
 
         Assert.Single(result.Changes);
-        Assert.Equal(look.ModKey, Assert.Single(plugins.Patch.Armors.Single().Armature).FormKey.ModKey);
-        Assert.Empty(plugins.Patch.ArmorAddons);
+        // The addon the look plugin added is a copy in the patch, not a link into the look plugin.
+        Assert.Equal(plugins.Patch.ModKey, Assert.Single(plugins.Patch.Armors.Single().Armature).FormKey.ModKey);
+        Assert.Single(plugins.Patch.ArmorAddons);
         var credits = fileSystem.File.ReadAllText(@"C:\Synthesis\Output\CREDITS.md");
         Assert.Contains("| ArmorIronCuirass | Iron Armor |", credits);
         Assert.Contains(log.Infos, line => line.StartsWith("Items changed: 1.", StringComparison.Ordinal));
@@ -109,6 +119,26 @@ public class PatchRunTests
 
         Assert.Contains("Relics of Skyrim.esm is not enabled", ex.Message);
         Assert.Empty(plugins.Patch.EnumerateMajorRecords());
+        AssertForwardFolderUntouched(fileSystem);
+    }
+
+    [Fact]
+    public void A_listed_plugin_after_the_patch_finds_the_profile_but_fails_the_run_with_its_own_message()
+    {
+        var plugins = new TestPlugins();
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        var relics = ModKey.FromFileName("Relics of Skyrim.esm");
+        var log = new TestLog();
+
+        // The user's case: plugins.txt still lists the patch (inactive, its file gone) with the active look plugin below it.
+        // Synthesis cut its copy of plugins.txt at the patch, so its load order ends before both.
+        var ex = Assert.Throws<RunFailedException>(() =>
+            PatchRun.Run(Inputs(plugins, plugins.LoadOrder(), fileSystem, Merging(relics), log, $"{plugins.Patch.ModKey}\r\n*{relics}\r\n")));
+
+        Assert.Contains(log.Infos, line => line.Contains("profile \"My Profile\""));
+        Assert.Contains($"Relics of Skyrim.esm is after {plugins.Patch.ModKey} in the load order; Synthesis gives patchers nothing below its patch", ex.Message);
+        Assert.Contains($"Move {plugins.Patch.ModKey} below it", ex.Message);
+        Assert.DoesNotContain("not enabled", ex.Message);
         AssertForwardFolderUntouched(fileSystem);
     }
 
@@ -139,6 +169,29 @@ public class PatchRunTests
 
         Assert.Contains("Broken.esp", ex.Message);
         AssertForwardFolderUntouched(fileSystem);
+    }
+
+    [Fact]
+    public void A_wide_type_change_logs_an_error_and_leaves_that_item_alone_without_failing_the_run()
+    {
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+        plugins.AddSwordLook(look);
+        plugins.Stats.Weapons.Single().Data = new WeaponData { AnimationType = WeaponAnimationType.OneHandSword };
+        look.Weapons.Single().Data = new WeaponData { AnimationType = WeaponAnimationType.Bow };
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        var log = new TestLog();
+
+        var result = PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), log));
+
+        Assert.Empty(plugins.Patch.Weapons);
+        Assert.Equal(1, result.TypeSkipped);
+        var error = Assert.Single(log.Errors);
+        Assert.Contains("IronSword", error);
+        Assert.Contains("OneHandSword", error);
+        Assert.Contains("Bow", error);
+        Assert.Contains(log.Infos, line => line.Contains("Items left unchanged because of a type discrepancy: 1."));
+        Assert.Contains(log.Infos, line => line.Contains("Errors: 1"));
     }
 
     [Fact]

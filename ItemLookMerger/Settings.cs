@@ -1,3 +1,4 @@
+using ItemLookMerger.Core;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Synthesis.Settings;
 using Newtonsoft.Json;
@@ -21,6 +22,20 @@ public class Settings
     [SynthesisSettingName("Forward names")]
     [SynthesisTooltip("Also take the item name from the look plugin.")]
     public bool ForwardNames { get; set; }
+
+    // Synthesis lists the member names as they are, so they are spelled out; the tooltip explains them.
+    [SynthesisOrder]
+    [SynthesisSettingName("In case of type discrepancy")]
+    [SynthesisTooltip(
+        "What to do when a look plugin gives an item another weapon type (one-handed sword to greatsword, sword to axe) or armor type\n"
+        + "(light, heavy, clothing) than the winning stats have.\n"
+        + "TakeVisualModWeaponType: a weapon takes the type-bound stats (animation type, speed, reach, damage, equip slot, type keywords,\n"
+        + "sounds) of the generic base item of the look's type, and keeps its own name, value, enchantment and scripts. Armor keeps the modlist type.\n"
+        + "TakeModlistItemType: the item keeps the type of the winning stats and gets the look anyway.\n"
+        + "SkipMerging: the item is not changed; the log names it.\n"
+        + "Changes between melee, bow, crossbow and staff, between arrow and bolt, and between body armor, shield and jewelry\n"
+        + "stop the run with the items listed, whatever this is set to.")]
+    public TypeDiscrepancyHandling InCaseOfTypeDiscrepancy { get; set; } = TypeDiscrepancyHandling.TakeVisualModWeaponType;
 
     [SynthesisOrder]
     [SynthesisSettingName("Verbose logging")]

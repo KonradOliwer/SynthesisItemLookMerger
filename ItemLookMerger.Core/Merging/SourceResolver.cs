@@ -6,11 +6,14 @@ namespace ItemLookMerger.Core.Merging;
 
 /// <summary>
 /// Step 1: turns the chosen plugins into look sources. Every listed plugin must be enabled, that is in the load order Synthesis was
-/// given; its MO2 mod (for assets and credits) is the enabled mod MO2 serves the plugin file from. An empty list, the patch itself or a
-/// plugin that isn't enabled fails the run before anything is changed, with one error naming every such entry.
+/// given; its MO2 mod (for assets and credits) is the enabled mod MO2 serves the plugin file from. An empty list, the patch itself, a
+/// plugin that isn't enabled or one that the profile has active but below the patch (Synthesis gives patchers nothing below its
+/// patch) fails the run before anything is changed, with one error naming every such entry.
 /// </summary>
 internal static class SourceResolver
 {
+    /// <param name="loadOrder">Synthesis's load order: the active plugins above the patch.</param>
+    /// <param name="mo2">The detected profile; its plugins.txt tells a plugin below the patch from one that isn't active.</param>
     public static IReadOnlyList<LookSource> Resolve(
         IReadOnlyList<ModKey> plugins,
         IReadOnlyList<ISkyrimModGetter> loadOrder,
@@ -28,6 +31,7 @@ internal static class SourceResolver
         var loaded = loadOrder.ToDictionary(mod => mod.ModKey);
         var problems = new List<string>();
         var notEnabled = new List<ModKey>();
+        var afterPatch = new List<ModKey>();
         var sources = new List<LookSource>();
         foreach (var key in keys)
         {
@@ -38,7 +42,7 @@ internal static class SourceResolver
             }
             if (!loaded.TryGetValue(key, out var plugin))
             {
-                notEnabled.Add(key);
+                (mo2.IsActiveAfter(key, patchKey) ? afterPatch : notEnabled).Add(key);
                 continue;
             }
             var mod = ServingMod(mo2, key);
@@ -50,6 +54,10 @@ internal static class SourceResolver
                 $"{string.Join(", ", notEnabled)} {(notEnabled.Count == 1 ? "is" : "are")} not enabled (not in the load order Synthesis was given). "
                 + "Enable the mod in MO2's left panel and the plugin in the right panel, then run again. "
                 + "With content merging on, you can disable them again after the run.");
+        if (afterPatch.Count > 0)
+            problems.Add(
+                $"{string.Join(", ", afterPatch)} {(afterPatch.Count == 1 ? "is" : "are")} after {patchKey} in the load order; "
+                + $"Synthesis gives patchers nothing below its patch. Move {patchKey} below {(afterPatch.Count == 1 ? "it" : "them")} in MO2's plugin list.");
         if (problems.Count == 0) return sources;
         throw new RunFailedException(
             "\"Plugins to forward\" lists plugins that cannot be used, so the run stops without changing anything "
