@@ -1,0 +1,44 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+publish/
+*.binlog
+*.log
+
+# Test results / coverage
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# IDE / user files
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.rsuser
+*.DotSettings.user
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# Local agent configuration and notes
+PLAN.md
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.mcp.json
+.cocoindex_code/
+.codebase-memory/

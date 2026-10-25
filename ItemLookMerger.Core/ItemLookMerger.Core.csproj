@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ItemLookMerger.Core</RootNamespace>
+    <Description>The patcher logic: MO2 instance reading, look forwarding, record and asset copying, credits. No console, no Synthesis.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Must match the Mutagen version of the entry project (Synthesis reads it from there). -->
+    <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.54.4" />
+    <!-- NiflySharp, published on NuGet as "Nifly". -->
+    <PackageReference Include="Nifly" Version="1.1.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="ItemLookMerger.Tests" />
+  </ItemGroup>
+</Project>

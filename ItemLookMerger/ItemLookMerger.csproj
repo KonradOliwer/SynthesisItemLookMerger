@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ItemLookMerger</RootNamespace>
+    <!-- Noggog's version generator emits an AssemblyVersions type that Mutagen.Bethesda.Synthesis also ships; ours is the one used. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <Description>The Synthesis entry. It reads the settings, finds MO2, calls the core run and prints the log. The only project that uses the console and the Synthesis packages.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Mutagen.Bethesda.Synthesis" Version="0.36.6" />
+    <!-- Synthesis reads the Mutagen version only from this project's own references, so it must match the version the core uses. -->
+    <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.54.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ItemLookMerger.Core\ItemLookMerger.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="ItemLookMerger.Tests" />
+  </ItemGroup>
+</Project>
