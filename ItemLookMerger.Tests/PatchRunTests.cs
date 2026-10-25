@@ -27,6 +27,10 @@ public class PatchRunTests
             new FakeMo2Environment(Path.Combine(Mo2Fixtures.PortableFolder, "ModOrganizer.exe")), fileSystem, new NoOpener(), log);
     }
 
+    /// <summary>Puts <paramref name="topLines"/> above the fixture's modlist.txt, so those mods have the highest priority.</summary>
+    private static void AddModsOnTop(MockFileSystem fileSystem, string topLines) =>
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableProfile, "modlist.txt"), new MockFileData(topLines + Mo2Fixtures.Fixture("modlist.txt")));
+
     [Fact]
     public void A_failed_run_leaves_the_forward_folder_untouched()
     {
@@ -35,16 +39,85 @@ public class PatchRunTests
         broken.MiscItems.Add(new MiscItem(new FormKey(ModKey.FromFileName("Missing.esm"), 0x000800), SkyrimRelease.SkyrimSE));
         var fileSystem = Mo2Fixtures.Portable();
         var forward = Path.Combine(Mo2Fixtures.PortableMods, "OUTPUT ItemLookMerger");
-        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableMods, "Better Iron Armor", "Broken.esp"), new MockFileData([]));
+        AddModsOnTop(fileSystem, "+Broken Mod\r\n");
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableMods, "Broken Mod", "Broken.esp"), new MockFileData([]));
         fileSystem.AddFile(Path.Combine(forward, ".itemlookmerger"), new MockFileData("marker"));
         fileSystem.AddFile(Path.Combine(forward, @"Meshes\in_use.nif"), new MockFileData([1]));
         fileSystem.AddFile(Path.Combine(forward, "CREDITS.md"), new MockFileData("old credits"));
-        var options = new MergeOptions([broken.ModKey], false, false, AllowMerging: true, "OUTPUT ItemLookMerger");
+        var options = new MergeOptions(["Broken Mod"], false, false, AllowMerging: true, "OUTPUT ItemLookMerger");
 
         Assert.Throws<RunFailedException>(() => PatchRun.Run(Inputs(plugins, plugins.LoadOrder(broken), fileSystem, options, new TestLog())));
 
         Assert.True(fileSystem.File.Exists(Path.Combine(forward, @"Meshes\in_use.nif")));
         Assert.Equal("old credits", fileSystem.File.ReadAllText(Path.Combine(forward, "CREDITS.md")));
+    }
+
+    private sealed class SingleOpener(ISkyrimModGetter plugin) : IPluginOpener
+    {
+        public ISkyrimModGetter Open(string path) => plugin;
+    }
+
+    /// <summary>A portable fixture whose profile has the look mod "Relics of Skyrim" disabled, and a forward folder from an earlier run.</summary>
+    private static MockFileSystem WithDisabledRelicsAndForwardFolder(out string forward)
+    {
+        var fileSystem = Mo2Fixtures.Portable();
+        AddModsOnTop(fileSystem, "-Relics of Skyrim\r\n");
+        forward = Path.Combine(Mo2Fixtures.PortableMods, "OUTPUT ItemLookMerger");
+        fileSystem.AddFile(Path.Combine(forward, ".itemlookmerger"), new MockFileData("marker"));
+        fileSystem.AddFile(Path.Combine(forward, "earlier.nif"), new MockFileData([1]));
+        fileSystem.AddFile(Path.Combine(forward, "CREDITS.md"), new MockFileData("old credits"));
+        return fileSystem;
+    }
+
+    [Fact]
+    public void A_look_plugin_in_a_disabled_mod_is_merged_in()
+    {
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+        var fileSystem = WithDisabledRelicsAndForwardFolder(out var forward);
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableMods, "Relics of Skyrim", "Relics of Skyrim.esm"), new MockFileData([]));
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableMods, "Relics of Skyrim", @"Meshes\Armor\Relic\Relic_go.nif"), new MockFileData([5]));
+        var options = new MergeOptions(["Relics of Skyrim"], false, false, AllowMerging: true, "OUTPUT ItemLookMerger");
+        var inputs = Inputs(plugins, plugins.LoadOrder(), fileSystem, options, new TestLog()) with { PluginOpener = new SingleOpener(look) };
+
+        var result = PatchRun.Run(inputs);
+
+        Assert.Single(result.Changes);
+        Assert.False(fileSystem.File.Exists(Path.Combine(forward, "earlier.nif")));
+        Assert.Equal([5], fileSystem.File.ReadAllBytes(Path.Combine(forward, @"Meshes\Armor\Relic\Relic_go.nif")));
+        Assert.Contains("Relics of Skyrim.esm (Relics of Skyrim)", fileSystem.File.ReadAllText(Path.Combine(forward, "CREDITS.md")));
+    }
+
+    [Fact]
+    public void An_unknown_mod_name_fails_the_run_before_any_change()
+    {
+        var plugins = new TestPlugins();
+        var fileSystem = WithDisabledRelicsAndForwardFolder(out var forward);
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableMods, "Relics of Skyrim", "Relics of Skyrim.esm"), new MockFileData([]));
+        var options = new MergeOptions(["Relics of Skyrm"], false, false, AllowMerging: true, "OUTPUT ItemLookMerger");
+
+        var ex = Assert.Throws<RunFailedException>(() => PatchRun.Run(Inputs(plugins, plugins.LoadOrder(), fileSystem, options, new TestLog())));
+
+        Assert.Contains("Did you mean \"Relics of Skyrim\"?", ex.Message);
+        Assert.Empty(plugins.Patch.Armors);
+        Assert.True(fileSystem.File.Exists(Path.Combine(forward, "earlier.nif")));
+        Assert.Equal("old credits", fileSystem.File.ReadAllText(Path.Combine(forward, "CREDITS.md")));
+    }
+
+    [Fact]
+    public void Without_a_look_source_the_forward_folder_and_credits_are_left_alone()
+    {
+        var plugins = new TestPlugins();
+        var fileSystem = WithDisabledRelicsAndForwardFolder(out var forward);
+        var log = new TestLog();
+        var options = new MergeOptions(["", "  ", null], false, false, AllowMerging: true, "OUTPUT ItemLookMerger");
+
+        var result = PatchRun.Run(Inputs(plugins, plugins.LoadOrder(), fileSystem, options, log));
+
+        Assert.Empty(result.Changes);
+        Assert.True(fileSystem.File.Exists(Path.Combine(forward, "earlier.nif")));
+        Assert.Equal("old credits", fileSystem.File.ReadAllText(Path.Combine(forward, "CREDITS.md")));
+        Assert.Contains(log.Warnings, warning => warning.Contains("nothing to forward"));
     }
 
     [Fact]
@@ -68,7 +141,7 @@ public class PatchRunTests
     {
         var plugins = new TestPlugins();
         var look = plugins.LookPlugin("Look.esp", "Fancy");
-        var options = new MergeOptions([look.ModKey], false, false, AllowMerging: true, "OUTPUT ItemLookMerger");
+        var options = new MergeOptions(["Fancy Looks"], false, false, AllowMerging: true, "OUTPUT ItemLookMerger");
         var inputs = Inputs(plugins, plugins.LoadOrder(look), new MockFileSystem(), options, new TestLog()) with
         {
             Mo2Environment = new FakeMo2Environment(null),
@@ -96,12 +169,13 @@ public class PatchRunTests
         var fileSystem = Mo2Fixtures.Portable();
         var mods = Mo2Fixtures.PortableMods;
         var forward = Path.Combine(mods, "OUTPUT ItemLookMerger");
-        fileSystem.AddFile(Path.Combine(mods, "Better Iron Armor", "Look.esp"), new MockFileData([]));
-        fileSystem.AddFile(Path.Combine(mods, "Better Iron Armor", @"Meshes\Armor\Fancy\Fancy_go.nif"), new MockFileData([7]));
+        AddModsOnTop(fileSystem, "+Fancy Looks\r\n");
+        fileSystem.AddFile(Path.Combine(mods, "Fancy Looks", "Look.esp"), new MockFileData([]));
+        fileSystem.AddFile(Path.Combine(mods, "Fancy Looks", @"Meshes\Armor\Fancy\Fancy_go.nif"), new MockFileData([7]));
         fileSystem.AddFile(Path.Combine(mods, "Stats Overhaul", @"Meshes\Armor\Iron\cuirass_go.nif"), new MockFileData([8]));
         fileSystem.AddFile(Path.Combine(forward, ".itemlookmerger"), new MockFileData("marker"));
         fileSystem.AddFile(Path.Combine(forward, "stale.dds"), new MockFileData([0]));
-        var options = new MergeOptions([look.ModKey], ForwardNames: false, VerboseLogging: false, AllowMerging: true, "OUTPUT ItemLookMerger");
+        var options = new MergeOptions(["Fancy Looks"], ForwardNames: false, VerboseLogging: false, AllowMerging: true, "OUTPUT ItemLookMerger");
 
         PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, options, new TestLog()));
 
@@ -109,7 +183,7 @@ public class PatchRunTests
         Assert.True(fileSystem.File.Exists(Path.Combine(forward, ".itemlookmerger")));
         Assert.Equal([7], fileSystem.File.ReadAllBytes(Path.Combine(forward, @"Meshes\Armor\Fancy\Fancy_go.nif")));
         Assert.False(fileSystem.File.Exists(Path.Combine(forward, @"Meshes\Armor\Iron\cuirass_go.nif")));
-        Assert.Contains("Look.esp (Better Iron Armor)", fileSystem.File.ReadAllText(Path.Combine(forward, "CREDITS.md")));
+        Assert.Contains("Look.esp (Fancy Looks)", fileSystem.File.ReadAllText(Path.Combine(forward, "CREDITS.md")));
     }
 
     [Fact]
@@ -118,8 +192,10 @@ public class PatchRunTests
         var plugins = new TestPlugins();
         var look = plugins.LookPlugin("Look.esp", "Fancy");
         var fileSystem = Mo2Fixtures.Portable();
+        AddModsOnTop(fileSystem, "+Fancy Looks\r\n");
+        fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableMods, "Fancy Looks", "Look.esp"), new MockFileData([]));
         var log = new TestLog();
-        var options = new MergeOptions([look.ModKey, ModKey.Null], ForwardNames: false, VerboseLogging: true, AllowMerging: false, null);
+        var options = new MergeOptions(["Fancy Looks", ""], ForwardNames: false, VerboseLogging: true, AllowMerging: false, null);
 
         var result = PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, options, log));
 

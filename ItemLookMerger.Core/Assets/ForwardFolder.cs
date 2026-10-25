@@ -20,10 +20,7 @@ internal static class ForwardFolder
         var trimmed = name?.Trim() ?? string.Empty;
         if (trimmed.Length == 0)
             throw new RunFailedException("Content merging is on, but the forward folder name is empty. Name the MO2 mod folder that receives the assets and CREDITS.md.");
-        if (fileSystem.Path.IsPathRooted(trimmed)
-            || trimmed.Contains("..", StringComparison.Ordinal)
-            || trimmed.IndexOfAny(['/', '\\']) >= 0
-            || trimmed.IndexOfAny(fileSystem.Path.GetInvalidFileNameChars()) >= 0)
+        if (!IsPlainFolderName(fileSystem, trimmed))
             throw new RunFailedException(
                 $"The forward folder name \"{trimmed}\" must be a plain folder name inside the MO2 mods folder, without \"..\", \\ or /.");
 
@@ -34,6 +31,17 @@ internal static class ForwardFolder
             throw new RunFailedException($"The forward folder {folder} is not directly inside the MO2 mods folder {mo2.ModsDirectory}.");
         return folder;
     }
+
+    /// <summary>
+    /// Whether <paramref name="name"/> names a folder directly inside another: not empty, not rooted, without "..", path separators
+    /// or characters a file name cannot have.
+    /// </summary>
+    public static bool IsPlainFolderName(IFileSystem fileSystem, string name) =>
+        name.Length > 0
+        && !fileSystem.Path.IsPathRooted(name)
+        && !name.Contains("..", StringComparison.Ordinal)
+        && name.IndexOfAny(['/', '\\']) < 0
+        && name.IndexOfAny(fileSystem.Path.GetInvalidFileNameChars()) < 0;
 
     /// <summary>
     /// Makes <paramref name="folder"/> an empty folder owned by this patcher: creates it with the marker, or deletes everything in it

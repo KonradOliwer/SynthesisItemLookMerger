@@ -22,8 +22,6 @@ public static class Mo2Locator
         "ItemLookMerger needs Mod Organizer 2: no ModOrganizer.exe was found among the processes that started this patcher. "
         + "Launch Synthesis through MO2 (add it as an executable in MO2 and run it from there).";
 
-    private static readonly string[] PluginExtensions = [".esm", ".esp", ".esl"];
-
     /// <summary>The plugins the game always loads (Skyrim.esm, Update.esm and the DLCs), whatever plugins.txt says.</summary>
     private static readonly HashSet<ModKey> BaseMasters =
         Implicits.Get(Mutagen.Bethesda.GameRelease.SkyrimSE).Listings.ToHashSet();
@@ -76,6 +74,7 @@ public static class Mo2Locator
             if (distinct[0].Count() > 1)
                 log.Info($"Profiles {string.Join(", ", distinct[0].Select(match => $"\"{match.Instance.ProfileName}\""))} match equally (identical mod lists).");
             foreach (var reason in rejected) log.Verbose($"MO2 candidate rejected: {reason}");
+            log.Verbose($"MO2 {instance.DescribeModSearch()}.");
             return instance;
         }
 
@@ -125,7 +124,7 @@ public static class Mo2Locator
             foreach (var file in fileSystem.Directory.EnumerateFiles(folder))
             {
                 var name = fileSystem.Path.GetFileName(file);
-                if (!PluginExtensions.Contains(fileSystem.Path.GetExtension(name), StringComparer.OrdinalIgnoreCase)) continue;
+                if (!Mo2Instance.PluginExtensions.Contains(fileSystem.Path.GetExtension(name), StringComparer.OrdinalIgnoreCase)) continue;
                 if (!holders.TryGetValue(name, out var mods)) holders[name] = mods = [];
                 mods.Add(modName);
             }

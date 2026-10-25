@@ -75,6 +75,12 @@ internal static class CreditsWriter
         return text.ToString();
     }
 
+    /// <summary>The origin of a plugin: a look source's listed mod, else the MO2 mod with the plugin file (the stats side).</summary>
+    public static PluginOrigin Origin(Mo2Instance mo2, IReadOnlyList<LookSource> sources, ModKey plugin) =>
+        sources.FirstOrDefault(source => source.ModKey == plugin) is { ModName: { } modName }
+            ? new PluginOrigin(plugin, modName, mo2.ReadMeta(modName))
+            : OriginFromMo2(mo2, plugin);
+
     /// <summary>The origin of a plugin from MO2: the mod with the plugin file (enabled first), else none.</summary>
     public static PluginOrigin OriginFromMo2(Mo2Instance mo2, ModKey plugin)
     {

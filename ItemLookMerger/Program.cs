@@ -43,7 +43,7 @@ public static class Program
             .ToList();
         var merging = settings.ContentMerging ?? new ContentMergingSettings();
         var options = new MergeOptions(
-            settings.PluginsToForward ?? [],
+            settings.ModsToForward ?? [],
             settings.ForwardNames,
             settings.VerboseLogging,
             merging.AllowMerging,

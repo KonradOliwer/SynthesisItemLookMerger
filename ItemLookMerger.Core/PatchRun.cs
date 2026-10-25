@@ -42,8 +42,14 @@ public static class PatchRun
         try
         {
             sources = SourceResolver.Resolve(
-                options.PluginsToForward, inputs.LoadOrder, inputs.Patch.ModKey, mo2, inputs.PluginOpener, options.AllowMerging, log);
-            if (sources.Count == 0) log.Warning("No usable look source; nothing to forward.");
+                options.ModsToForward, inputs.LoadOrder, inputs.Patch.ModKey, mo2, inputs.PluginOpener, options.AllowMerging,
+                options.ForwardFolderName, fileSystem, log);
+            if (sources.Count == 0)
+            {
+                // Nothing to forward: an earlier run's forward folder and CREDITS.md still describe its patch, so they stay as they are.
+                log.Warning("\"Mods to forward\" lists no mod; nothing to forward. The forward folder and CREDITS.md are left as they are.");
+                return new MergeResult([], 0, 0, 0, []);
+            }
             var result = LookMerger.Merge(inputs.LoadOrder, inputs.Patch, sources, options.ForwardNames, log);
 
             AssetCopyResult? assets = null;
@@ -57,7 +63,7 @@ public static class PatchRun
             var creditsFolder = forwardFolder ?? fileSystem.Path.GetDirectoryName(fileSystem.Path.GetFullPath(inputs.OutputPath))!;
             var creditsPath = fileSystem.Path.Combine(creditsFolder, CreditsWriter.FileName);
             fileSystem.Directory.CreateDirectory(creditsFolder);
-            fileSystem.File.WriteAllText(creditsPath, CreditsWriter.Build(result.Changes, plugin => CreditsWriter.OriginFromMo2(mo2, plugin)));
+            fileSystem.File.WriteAllText(creditsPath, CreditsWriter.Build(result.Changes, plugin => CreditsWriter.Origin(mo2, sources, plugin)));
 
             PrintSummary(result, assets, sources, creditsPath, log);
             return result;
@@ -89,7 +95,7 @@ public static class PatchRun
                 $"Assets copied: {assets.Copied}. Vanilla assets skipped: {assets.BaseGameSkipped}. "
                 + $"Assets from other mods (warned): {assets.FromOtherMods}. Missing assets (warned): {assets.Missing}.");
         log.Info($"Credits: {creditsPath}");
-        log.Info($"Warnings: {warnings}. Errors (skipped plugins): {errors}.");
+        log.Info($"Warnings: {warnings}. Errors: {errors}.");
     }
 
     /// <summary>Passes everything on and counts the warnings and errors for the summary.</summary>

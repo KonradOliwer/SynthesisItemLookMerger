@@ -1,6 +1,4 @@
-using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Synthesis.Settings;
-using Newtonsoft.Json;
 
 namespace ItemLookMerger;
 
@@ -8,13 +6,15 @@ namespace ItemLookMerger;
 public class Settings
 {
     [SynthesisOrder]
-    [SynthesisSettingName("Plugins to forward")]
+    [SynthesisSettingName("Mods to forward")]
     [SynthesisTooltip(
-        "The plugins whose item looks (meshes, icons, armor addons, view models) are forwarded onto the winning stats record.\n"
-        + "For an item several of them change, the one whose MO2 mod has the higher priority wins (load order breaks ties within one mod).\n"
-        + "A plugin outside the load order is read from its MO2 mod when content merging is on.")]
-    [JsonProperty(ItemConverterType = typeof(EmptyTextAsNullConverter))]
-    public List<ModKey> PluginsToForward { get; set; } = [];
+        "The MO2 mods whose item looks (meshes, icons, armor addons, view models) are forwarded onto the winning stats record.\n"
+        + "Enter each mod's folder name exactly as MO2's left panel shows it; enabled and disabled mods both work.\n"
+        + "Every plugin (.esp, .esm, .esl) at the top of the mod folder is a look source, and the mod's own assets are copied.\n"
+        + "For an item several of them change, the mod with the higher MO2 priority wins (load order breaks ties within one mod).\n"
+        + "A plugin outside the load order is read from the mod folder when content merging is on.\n"
+        + "An unknown name, or a mod without a plugin, fails the run without changing anything.")]
+    public List<string> ModsToForward { get; set; } = [];
 
     [SynthesisOrder]
     [SynthesisSettingName("Forward names")]
@@ -38,7 +38,7 @@ public class ContentMergingSettings
     [SynthesisSettingName("Allow merging")]
     [SynthesisTooltip(
         "Reads look plugins that are disabled or missing from the load order out of their MO2 mod, and copies the records their looks need into the patch.\n"
-        + "Also copies the assets of every listed look plugin (enabled or disabled) from its MO2 mod into the forward folder.\n"
+        + "Also copies the assets of every listed look mod (enabled or disabled) into the forward folder.\n"
         + "Only the look mods' assets are copied, never those of the stats side or of any other mod.\n"
         + "Off: no plugin is read from MO2 and no asset is copied.")]
     public bool AllowMerging { get; set; } = true;

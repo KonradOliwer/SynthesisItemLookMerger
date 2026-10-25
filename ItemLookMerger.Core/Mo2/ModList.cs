@@ -17,7 +17,8 @@ internal static class ModList
     public static IReadOnlyList<ModListEntry> Parse(string text)
     {
         var entries = new List<ModListEntry>();
-        foreach (var rawLine in text.Split('\n'))
+        // A BOM that reached the text would hide the first line's flag, since Trim keeps it.
+        foreach (var rawLine in text.TrimStart('﻿').Split('\n'))
         {
             var line = rawLine.Trim();
             if (line.Length < 2 || line[0] is not ('+' or '-')) continue;
