@@ -19,7 +19,6 @@ public sealed record RunInputs(
     MergeOptions Options,
     IMo2Environment Mo2Environment,
     IFileSystem FileSystem,
-    IPluginOpener PluginOpener,
     ILog Log);
 
 /// <summary>The whole run: find MO2, resolve the sources, forward the looks, copy assets, write the credits and the summary.</summary>
@@ -33,48 +32,58 @@ public static class PatchRun
 
         var loadOrderKeys = inputs.LoadOrder.Select(mod => mod.ModKey).ToList();
         var mo2 = Mo2Locator.Locate(inputs.Mo2Environment, fileSystem, new LoadOrderFacts(inputs.DataFolder, loadOrderKeys), log);
-        // The name is checked now; the folder itself is only emptied once the merge has succeeded, so a failed run leaves it alone.
+        // The name is checked now; the folder's content is only replaced once everything has succeeded, so a failed run leaves it alone.
         string? forwardFolder = null;
         if (options.AllowMerging) forwardFolder = ForwardFolder.Resolve(fileSystem, mo2, options.ForwardFolderName);
         else ForwardFolder.ReportLeftover(fileSystem, mo2, options.ForwardFolderName, log);
 
-        IReadOnlyList<LookSource> sources = [];
-        try
-        {
-            sources = SourceResolver.Resolve(
-                options.ModsToForward, inputs.LoadOrder, inputs.Patch.ModKey, mo2, inputs.PluginOpener, options.AllowMerging,
-                options.ForwardFolderName, fileSystem, log);
-            if (sources.Count == 0)
-            {
-                // Nothing to forward: an earlier run's forward folder and CREDITS.md still describe its patch, so they stay as they are.
-                log.Warning("\"Mods to forward\" lists no mod; nothing to forward. The forward folder and CREDITS.md are left as they are.");
-                return new MergeResult([], 0, 0, 0, []);
-            }
-            var result = LookMerger.Merge(inputs.LoadOrder, inputs.Patch, sources, options.ForwardNames, log);
+        // Fails the run for an empty list or a plugin that isn't enabled, so there is always at least one source past this point.
+        var sources = SourceResolver.Resolve(options.PluginsToForward, inputs.LoadOrder, inputs.Patch.ModKey, mo2, log);
+        // With merging on, the patch is made independent of the look plugins, so they can be disabled after the run.
+        var result = LookMerger.Merge(inputs.LoadOrder, inputs.Patch, sources, options.ForwardNames, selfContained: options.AllowMerging, log);
+        string Credits() => CreditsWriter.Build(result.Changes, plugin => CreditsWriter.Origin(mo2, sources, plugin));
 
-            AssetCopyResult? assets = null;
-            if (forwardFolder != null)
+        AssetCopyResult? assets = null;
+        string creditsPath;
+        if (forwardFolder != null)
+        {
+            // Assets and credits are written into a staging folder and swapped in at the end, so a failed copy keeps the previous output.
+            var staging = ForwardFolder.BeginStaging(fileSystem, forwardFolder, log);
+            try
             {
-                ForwardFolder.PrepareEmpty(fileSystem, forwardFolder, log);
                 if (result.Assets.Count > 0)
-                    assets = AssetCopier.Copy(result.Assets, mo2, forwardFolder, inputs.DataFolder, loadOrderKeys, fileSystem, log);
+                    assets = AssetCopier.Copy(result.Assets, mo2, forwardFolder, inputs.DataFolder, loadOrderKeys, fileSystem, log, targetFolder: staging);
+                fileSystem.File.WriteAllText(fileSystem.Path.Combine(staging, CreditsWriter.FileName), Credits());
             }
-
-            var creditsFolder = forwardFolder ?? fileSystem.Path.GetDirectoryName(fileSystem.Path.GetFullPath(inputs.OutputPath))!;
-            var creditsPath = fileSystem.Path.Combine(creditsFolder, CreditsWriter.FileName);
-            fileSystem.Directory.CreateDirectory(creditsFolder);
-            fileSystem.File.WriteAllText(creditsPath, CreditsWriter.Build(result.Changes, plugin => CreditsWriter.Origin(mo2, sources, plugin)));
-
-            PrintSummary(result, assets, sources, creditsPath, log);
-            return result;
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                ForwardFolder.DiscardStaging(fileSystem, staging, log);
+                throw new RunFailedException(
+                    $"Writing the assets or CREDITS.md failed ({ex.Message}); the forward folder {forwardFolder} keeps its previous output. "
+                    + "Close any program that has those files open, and check the free disk space, then run the patcher again.");
+            }
+            catch
+            {
+                ForwardFolder.DiscardStaging(fileSystem, staging, log);
+                throw;
+            }
+            ForwardFolder.CommitStaging(fileSystem, forwardFolder, staging, log);
+            creditsPath = fileSystem.Path.Combine(forwardFolder, CreditsWriter.FileName);
         }
-        finally
+        else
         {
-            foreach (var source in sources.Where(source => !source.InLoadOrder)) (source.Mod as IDisposable)?.Dispose();
+            var creditsFolder = fileSystem.Path.GetDirectoryName(fileSystem.Path.GetFullPath(inputs.OutputPath))!;
+            creditsPath = fileSystem.Path.Combine(creditsFolder, CreditsWriter.FileName);
+            fileSystem.Directory.CreateDirectory(creditsFolder);
+            fileSystem.File.WriteAllText(creditsPath, Credits());
         }
+
+        PrintSummary(result, assets, sources, creditsPath, options.AllowMerging, log);
+        return result;
     }
 
-    private static void PrintSummary(MergeResult result, AssetCopyResult? assets, IReadOnlyList<LookSource> sources, string creditsPath, CountingLog log)
+    private static void PrintSummary(
+        MergeResult result, AssetCopyResult? assets, IReadOnlyList<LookSource> sources, string creditsPath, bool selfContained, CountingLog log)
     {
         var (warnings, errors) = (log.Warnings, log.Errors);
         log.Info("--- Summary ---");
@@ -85,11 +94,14 @@ public static class PatchRun
                 .GroupBy(change => change.Signature)
                 .Select(group => $"{group.Key} {group.Count()}")
                 .ToList();
-            log.Info($"{source.ModKey}{(source.InLoadOrder ? "" : " (merged in)")}: {(perType.Count == 0 ? "no item changed" : string.Join(", ", perType))}");
+            log.Info($"{source.ModKey}: {(perType.Count == 0 ? "no item changed" : string.Join(", ", perType))}");
         }
         log.Info(
             $"Items changed: {result.Changes.Count}. Skipped with identical looks: {result.IdenticalSkipped}. "
-            + $"Look records (ARMA, TXST, STAT, PROJ) forwarded: {result.ForwardedLookRecords}. Records copied from merged-in plugins: {result.DuplicatedRecords}.");
+            + $"Look records (ARMA, TXST, STAT, PROJ) forwarded: {result.ForwardedLookRecords}. Look records copied from look plugins: {result.DuplicatedRecords}.");
+        log.Info(selfContained
+            ? "The patch has no look plugin as a master: you can disable the look mods until the next run (enable them again before it)."
+            : "Content merging is off: the patch keeps the look plugins as masters, so they must stay enabled.");
         if (assets != null)
             log.Info(
                 $"Assets copied: {assets.Copied}. Vanilla assets skipped: {assets.BaseGameSkipped}. "

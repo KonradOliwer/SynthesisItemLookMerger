@@ -3,14 +3,13 @@ using Mutagen.Bethesda.Skyrim;
 
 namespace ItemLookMerger.Core.Merging;
 
-/// <summary>A plugin whose item looks are forwarded.</summary>
-/// <param name="InLoadOrder">False for a plugin read from its MO2 mod folder (disabled or missing): its records and assets are merged in.</param>
-/// <param name="ModName">The MO2 mod that holds the plugin, or null (base game, or unknown).</param>
+/// <summary>A plugin of the load order whose item looks are forwarded.</summary>
+/// <param name="ModName">The enabled MO2 mod MO2 serves the plugin file from, or null (base game, Creation Club, or unknown).</param>
 /// <param name="ModPriority">
-/// The mod's MO2 priority (its position in the left panel; higher wins, as for file conflicts), or -1 without a mod.
-/// Decides between look sources that change the same record.
+/// That mod's MO2 priority (its position in the left panel; higher wins, as for file conflicts), or -1 without a mod.
+/// Decides which look mod provides an asset several of them have; between records, the load order decides.
 /// </param>
-public sealed record LookSource(ISkyrimModGetter Mod, bool InLoadOrder, string? ModName, int ModPriority = -1)
+public sealed record LookSource(ISkyrimModGetter Mod, string? ModName, int ModPriority = -1)
 {
     public ModKey ModKey => Mod.ModKey;
 }

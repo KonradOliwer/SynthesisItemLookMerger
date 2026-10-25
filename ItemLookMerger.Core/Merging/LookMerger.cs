@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Reflection;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Assets;
@@ -22,22 +24,37 @@ public sealed record ChangedItem(
 /// <summary>An asset a forwarded look needs, from its look source's mod; <paramref name="Item"/> names the item for warnings.</summary>
 public sealed record AssetNeed(string Path, string Item, LookSource Source);
 
+/// <param name="DuplicatedRecords">Look records of the look plugins copied into the patch as new records (self-contained patch only).</param>
 public sealed record MergeResult(
     IReadOnlyList<ChangedItem> Changes, int IdenticalSkipped, int DuplicatedRecords, int ForwardedLookRecords, IReadOnlyList<AssetNeed> Assets);
 
 /// <summary>
 /// Steps 2 to 5: picks the item overrides of the sources and the look records (ARMA, TXST, STAT, PROJ) they override, compares
-/// their look with the stats side's, forwards the differing looks into the patch and copies the records a merged-in source's
-/// looks depend on.
+/// their look with the stats side's and forwards the differing looks into the patch. For a self-contained patch it then copies the
+/// look records the forwarded looks use out of the look plugins, so the patch needs none of them as a master.
 /// </summary>
 internal static class LookMerger
 {
-    /// <param name="loadOrder">The load order without the patch, lowest priority first.</param>
+    /// <summary>
+    /// The fields that hold an item's or a look record's look. Links in them to look records (ARMA, TXST, STAT, PROJ) of a look
+    /// plugin are copied into a self-contained patch; any other link to a look plugin is not.
+    /// </summary>
+    private static readonly HashSet<string> VisualFields =
+    [
+        "Model", "Icons", "WorldModel", "Armature", "ScopeModel", "FirstPersonModel", "InventoryArt",
+        "SkinTexture", "TextureSwapList", "Lod", "MuzzleFlashModel",
+    ];
+
+    /// <param name="loadOrder">The load order without the patch, lowest priority first. Every source is in it.</param>
     /// <param name="patch">The patch; records an earlier patcher of the Synthesis group put there count as the stats side.</param>
-    /// <param name="sources">The look sources; between them, the one whose MO2 mod has the higher priority wins.</param>
+    /// <param name="sources">The look sources; between them, the one later in the load order wins.</param>
+    /// <param name="selfContained">
+    /// Make the patch independent of the look plugins (content merging on): copy the look records it uses, keep the stats side's
+    /// value of any other field that would point at a look plugin, and fail if a link to a look plugin is left.
+    /// </param>
     public static MergeResult Merge(
-        IReadOnlyList<ISkyrimModGetter> loadOrder, ISkyrimMod patch, IReadOnlyList<LookSource> sources, bool forwardNames, ILog log) =>
-        new Run(loadOrder, patch, sources, forwardNames, log).Execute();
+        IReadOnlyList<ISkyrimModGetter> loadOrder, ISkyrimMod patch, IReadOnlyList<LookSource> sources, bool forwardNames, bool selfContained, ILog log) =>
+        new Run(loadOrder, patch, sources, forwardNames, selfContained, log).Execute();
 
     private sealed record Pick(LookSource Source, IMajorRecordGetter Record);
 
@@ -47,35 +64,40 @@ internal static class LookMerger
     /// <summary>What became of one look record: the version whose links are followed further, and the source it was forwarded from.</summary>
     private sealed record LookRecordDecision(IMajorRecordGetter? Effective, LookSource? ForwardedFrom, string Label);
 
+    /// <summary>A record the run wrote into the patch, with a copy of its stats side's version from before the look went onto it.</summary>
+    private sealed record Written(IMajorRecord Target, IMajorRecordGetter? Fallback, string Label);
+
     private sealed class Run
     {
         private readonly IReadOnlyList<ISkyrimModGetter> _loadOrder;
         private readonly ISkyrimMod _patch;
         private readonly IReadOnlyList<LookSource> _sources;
         private readonly bool _forwardNames;
+        private readonly bool _selfContained;
         private readonly ILog _log;
         private readonly HashSet<ModKey> _sourceKeys;
         private readonly Dictionary<ModKey, ISkyrimModGetter> _loaded;
-        private readonly Dictionary<ModKey, LookSource> _mergedSources;
         private readonly IReadOnlyList<LookSource> _weakestFirst;
         private readonly Dictionary<ModKey, ILinkCache<ISkyrimMod, ISkyrimModGetter>> _sourceCaches = [];
         private readonly Dictionary<FormKey, (LookRecordType Type, Pick Pick)> _lookPicks = [];
         private readonly Dictionary<FormKey, LookRecordDecision> _lookDecisions = [];
         private readonly Dictionary<FormKey, bool> _reaches = [];
-        private readonly List<string> _unresolvedInLoadOrder = [];
+        private readonly List<string> _unresolved = [];
         private readonly List<AssetNeed> _assets = [];
         private readonly HashSet<FormKey> _forwardedLookRecords = [];
+        private readonly List<Written> _written = [];
+        private readonly Dictionary<FormKey, IModContext<ISkyrimMod, ISkyrimModGetter, IMajorRecord, IMajorRecordGetter>?> _lookRecordContexts = [];
 
-        public Run(IReadOnlyList<ISkyrimModGetter> loadOrder, ISkyrimMod patch, IReadOnlyList<LookSource> sources, bool forwardNames, ILog log)
+        public Run(IReadOnlyList<ISkyrimModGetter> loadOrder, ISkyrimMod patch, IReadOnlyList<LookSource> sources, bool forwardNames, bool selfContained, ILog log)
         {
             _loadOrder = loadOrder;
             _patch = patch;
             _sources = sources;
             _forwardNames = forwardNames;
+            _selfContained = selfContained;
             _log = log;
             _sourceKeys = sources.Select(source => source.ModKey).ToHashSet();
             _loaded = loadOrder.ToDictionary(mod => mod.ModKey);
-            _mergedSources = sources.Where(source => !source.InLoadOrder).ToDictionary(source => source.ModKey);
             _weakestFirst = InPrecedenceOrder(sources, loadOrder);
         }
 
@@ -101,12 +123,12 @@ internal static class LookMerger
                     if (wasIdentical) identical++;
                 }
             }
-            if (_unresolvedInLoadOrder.Count > 0)
+            if (_unresolved.Count > 0)
                 throw new RunFailedException(
-                    "These enabled look plugins override records the load order does not have (a missing master or record):\n  "
-                    + string.Join("\n  ", _unresolvedInLoadOrder));
+                    "These look plugins override records the load order does not have (a missing master or record):\n  "
+                    + string.Join("\n  ", _unresolved));
 
-            var duplicated = _mergedSources.Count == 0 ? 0 : CopyDependentRecords();
+            var duplicated = _selfContained ? MakeSelfContained() : 0;
             return new MergeResult(changes, identical, duplicated, _forwardedLookRecords.Count, _assets);
         }
 
@@ -155,6 +177,7 @@ internal static class LookMerger
             IMajorRecordGetter credited = stats.Version;
             if (itemDifferences.Count > 0)
             {
+                var fallback = Snapshot(stats.Version);
                 IMajorRecord target;
                 if (whole)
                 {
@@ -165,6 +188,7 @@ internal static class LookMerger
                     target = type.GetOrAddAsOverride(_patch, stats.Version);
                     LookFields.Copy(target, pick!.Record, _forwardNames);
                 }
+                if (_selfContained) _written.Add(new Written(target, fallback, label));
                 credited = target;
                 var assetLinks = whole ? pick.Record.EnumerateAssetLinks(AssetLinkQuery.Listed) : LookFields.ListedAssetLinks(pick.Record);
                 CollectAssets(assetLinks, startLinks, pick.Source, label);
@@ -207,8 +231,10 @@ internal static class LookMerger
                 }
                 else if (LookRecordType.Differences(stats.Version, pick.Record) is { Count: > 0 } differences)
                 {
+                    var fallback = Snapshot(stats.Version);
                     var target = type.GetOrAddAsOverride(_patch, stats.Version);
                     LookRecordType.Copy(target, pick.Record);
+                    if (_selfContained) _written.Add(new Written(target, fallback, label));
                     _forwardedLookRecords.Add(formKey);
                     CollectAssets(LookRecordType.AssetLinks(pick.Record), LookRecordType.LookLinks(pick.Record), pick.Source, item);
                     _log.Verbose($"{label}: look from {pick.Source.ModKey}, the rest from {stats.Plugin} ({string.Join(", ", differences)}).");
@@ -244,20 +270,22 @@ internal static class LookMerger
             return find(_patch, formKey) is { } patched ? new StatsSide(credit.Value, patched, InPatch: true) : new StatsSide(credit.Value, version, InPatch: false);
         }
 
-        /// <summary>Step 4 (A/B): a disabled source's override of a record the load order lacks is skipped; an enabled one's fails the run.</summary>
+        /// <summary>
+        /// A copy of the stats side's version to fall back on, taken before the look goes onto it (only a self-contained patch needs it).
+        /// </summary>
+        private IMajorRecordGetter? Snapshot(IMajorRecordGetter statsVersion) =>
+            _selfContained ? statsVersion.Duplicate(statsVersion.FormKey) : null;
+
+        /// <summary>Step 4: a look plugin's override of a record the load order lacks fails the run; all of them are listed at once.</summary>
         private void ReportUnresolved(LookSource source, string signature, FormKey formKey)
         {
             var why = _loaded.ContainsKey(formKey.ModKey)
                 ? $"its master {formKey.ModKey} has no such record"
                 : $"its master {formKey.ModKey} is not in the load order";
-            if (source.InLoadOrder) _unresolvedInLoadOrder.Add($"{source.ModKey}: {signature} {formKey} ({why})");
-            else _log.Warning($"{source.ModKey} overrides {signature} {formKey}, but {why}; that record is skipped.");
+            _unresolved.Add($"{source.ModKey}: {signature} {formKey} ({why})");
         }
 
-        /// <summary>
-        /// The version of a look record no look source overrides: the patch's, else the load order winner's, else (a record a merged-in
-        /// source adds) the source's own.
-        /// </summary>
+        /// <summary>The version of a look record no look source overrides: the patch's, else the load order winner's.</summary>
         private IMajorRecordGetter? EffectiveVersion(LookRecordType type, FormKey formKey)
         {
             if (type.Find(_patch, formKey) is { } patched) return patched;
@@ -265,7 +293,7 @@ internal static class LookMerger
             {
                 if (type.Find(_loadOrder[i], formKey) is { } record) return record;
             }
-            return _mergedSources.TryGetValue(formKey.ModKey, out var source) ? type.Find(source.Mod, formKey) : null;
+            return null;
         }
 
         /// <summary>The FormKeys of the load order's items of this type whose look reaches a look record a look source overrides.</summary>
@@ -300,7 +328,7 @@ internal static class LookMerger
 
         /// <summary>
         /// Step 2: per FormKey, the record of the strongest source that overrides it. Records a source adds itself are left out;
-        /// they are only copied when a forwarded look references them.
+        /// they only come into the patch through a forwarded look that uses them.
         /// </summary>
         private Dictionary<FormKey, Pick> PickOverrides(Func<ISkyrimModGetter, IEnumerable<IMajorRecordGetter>> records)
         {
@@ -364,63 +392,96 @@ internal static class LookMerger
         }
 
         /// <summary>
-        /// Step 5: the records of merged-in sources that the patch now links to (armor addons, texture sets, statics, ...) are copied
-        /// into the patch as new records and every link is remapped. A link to a record the source does not have (a dangling reference)
-        /// is cleared with a warning. Afterwards no patch record may link to such a source, as it would become a master the load order
-        /// does not have.
+        /// Step 5 (content merging on): makes the patch independent of the look plugins. In every record the run wrote, a link to a
+        /// look plugin's own look record (ARMA, TXST, STAT, PROJ) in a look field is kept by copying that record into the patch as a new
+        /// record, and the copies are handled the same way, so their look links are followed too. Any other link to a look plugin
+        /// (keywords, enchantments, scripts, races, ...) is not followed: the field gets the stats side's value back, with a warning,
+        /// and in a copied look record (which has no stats side) the link is cleared, with a warning. Afterwards no link in the patch
+        /// may point at a look plugin; if one does, the run fails.
         /// </summary>
-        private int CopyDependentRecords()
+        private int MakeSelfContained()
         {
-            var copied = 0;
-            foreach (var source in _mergedSources.Values)
+            var copies = new Dictionary<FormKey, FormKey>();
+            var pending = new Queue<Written>(_written);
+            while (pending.TryDequeue(out var entry))
             {
-                var sourceCache = SourceCache(source);
-                var mapping = new Dictionary<FormKey, FormKey>();
-                var dangling = new Dictionary<FormKey, string>();
-                var pending = new Queue<(IFormLinkGetter Link, string Owner)>(
-                    _patch.EnumerateMajorRecords().SelectMany(record => record.EnumerateFormLinks().Select(link => (link, Label(record)))));
-                while (pending.TryDequeue(out var entry))
+                foreach (var property in LinkProperties(entry.Target.GetType()))
                 {
-                    var (link, owner) = entry;
-                    if (link.FormKey.ModKey != source.ModKey || mapping.ContainsKey(link.FormKey) || dangling.ContainsKey(link.FormKey)) continue;
-                    if (!sourceCache.TryResolveContext(link.FormKey, link.Type, out var context))
+                    var lookLinks = LinksIn(property.GetValue(entry.Target))
+                        .Select(link => link.FormKey)
+                        .Where(formKey => _sourceKeys.Contains(formKey.ModKey))
+                        .Distinct()
+                        .ToList();
+                    if (lookLinks.Count == 0) continue;
+
+                    if (VisualFields.Contains(property.Name) && lookLinks.All(formKey => copies.ContainsKey(formKey) || LookRecordContext(formKey) != null))
                     {
-                        dangling[link.FormKey] = owner;
+                        foreach (var formKey in lookLinks.Where(formKey => !copies.ContainsKey(formKey)))
+                        {
+                            var context = LookRecordContext(formKey)!;
+                            var duplicate = context.DuplicateIntoAsNewRecord(_patch, context.Record.EditorID);
+                            copies[formKey] = duplicate.FormKey;
+                            _log.Verbose($"Copied {Label(context.Record)} from {context.ModKey} into the patch as {duplicate.FormKey}.");
+                            pending.Enqueue(new Written(duplicate, null, $"{Label(context.Record)} (copied from {context.ModKey})"));
+                        }
                         continue;
                     }
-                    var duplicate = context.DuplicateIntoAsNewRecord(_patch, context.Record.EditorID);
-                    mapping[link.FormKey] = duplicate.FormKey;
-                    _log.Verbose($"Copied {link.FormKey} from {source.ModKey} into the patch as {duplicate.FormKey}.");
-                    foreach (var next in duplicate.EnumerateFormLinks()) pending.Enqueue((next, Label(duplicate)));
-                }
-                _patch.RemapLinks(mapping);
-                if (dangling.Count > 0)
-                {
-                    _log.Warning(
-                        $"{source.ModKey} links to records it does not contain; those links are cleared in the patch: "
-                        + string.Join("; ", dangling.Select(pair => $"{pair.Value} -> {pair.Key}")));
-                    _patch.RemapLinks(dangling.Keys.ToDictionary(formKey => formKey, _ => FormKey.Null));
-                }
-                copied += mapping.Count;
-                WarnAboutLostContent(source, mapping);
-            }
 
-            var mergedKeys = _mergedSources.Keys.ToHashSet();
+                    var targets = string.Join(", ", lookLinks);
+                    if (entry.Fallback != null)
+                    {
+                        property.SetValue(entry.Target, property.GetValue(entry.Fallback));
+                        _log.Warning(
+                            $"{entry.Label}: its {property.Name} points at {targets} of a look plugin, which is not a look record the patch can carry; "
+                            + "the stats side's value is kept.");
+                    }
+                    else
+                    {
+                        entry.Target.RemapLinks(lookLinks.ToDictionary(formKey => formKey, _ => FormKey.Null));
+                        _log.Warning(
+                            $"{entry.Label}: its {property.Name} points at {targets}, which is not a look record the patch can carry; the link is cleared.");
+                    }
+                }
+            }
+            _patch.RemapLinks(copies);
+
             var leftovers = _patch.EnumerateMajorRecords()
-                .SelectMany(record => record.EnumerateFormLinks().Select(link => (record, link)))
-                .Where(pair => mergedKeys.Contains(pair.link.FormKey.ModKey))
-                .Select(pair => $"{Label(pair.record)} -> {pair.link.FormKey}")
+                .SelectMany(record => record.EnumerateFormLinks()
+                    .Where(link => _sourceKeys.Contains(link.FormKey.ModKey))
+                    .Select(link => $"{Label(record)} -> {link.FormKey}")
+                    .Prepend(_sourceKeys.Contains(record.FormKey.ModKey) ? $"{Label(record)} is a record of {record.FormKey.ModKey}" : null))
+                .OfType<string>()
                 .Distinct()
                 .ToList();
             if (leftovers.Count > 0)
                 throw new RunFailedException(
-                    "The patch still links to records of plugins outside the load order, which would make them masters: "
-                    + string.Join("; ", leftovers.Take(10)) + (leftovers.Count > 10 ? $" (and {leftovers.Count - 10} more)" : ""));
-            return copied;
+                    "With content merging on, the patch must not need a look plugin as a master (so the look mods can be disabled), "
+                    + "but these records still point at one: " + string.Join("; ", leftovers.Take(10))
+                    + (leftovers.Count > 10 ? $" (and {leftovers.Count - 10} more)" : "")
+                    + ". Turn content merging off to keep the look plugins as masters.");
+
+            foreach (var source in _sources) ReportUncarriedContent(source, copies);
+            return copies.Count;
         }
 
-        /// <summary>A disabled source's other records are not merged in; disabling that plugin loses them.</summary>
-        private void WarnAboutLostContent(LookSource source, IReadOnlyDictionary<FormKey, FormKey> copied)
+        /// <summary>The look record (ARMA, TXST, STAT, PROJ) a look plugin has under <paramref name="formKey"/>, the strongest version; null otherwise.</summary>
+        private IModContext<ISkyrimMod, ISkyrimModGetter, IMajorRecord, IMajorRecordGetter>? LookRecordContext(FormKey formKey)
+        {
+            if (_lookRecordContexts.TryGetValue(formKey, out var known)) return known;
+            IModContext<ISkyrimMod, ISkyrimModGetter, IMajorRecord, IMajorRecordGetter>? found = null;
+            foreach (var source in Enumerable.Reverse(_weakestFirst))
+            {
+                found = LookRecordType.All
+                    .Select(type => SourceCache(source).TryResolveContext(formKey, type.GetterType, out var context) ? context : null)
+                    .FirstOrDefault(context => context != null);
+                if (found != null) break;
+            }
+            _lookRecordContexts[formKey] = found;
+            return found;
+        }
+
+        /// <summary>The records of a look plugin the patch doesn't carry, which are lost when that plugin is disabled.</summary>
+        private void ReportUncarriedContent(LookSource source, IReadOnlyDictionary<FormKey, FormKey> copied)
         {
             var lost = source.Mod.EnumerateMajorRecords()
                 .Where(record => !ItemType.IsItem(record) && !copied.ContainsKey(record.FormKey) && !_lookDecisions.ContainsKey(record.FormKey))
@@ -429,21 +490,33 @@ internal static class LookMerger
                 .Select(group => $"{group.Count()} {group.Key}")
                 .ToList();
             if (lost.Count > 0)
-                _log.Warning($"{source.ModKey} is not in the load order, and only its item looks are merged in. Its other content is lost: {string.Join(", ", lost)}.");
+                _log.Info($"{source.ModKey}: the patch carries its item looks only. Disabling it also drops its other content: {string.Join(", ", lost)}.");
         }
     }
 
-    /// <summary>
-    /// The sources from weakest to strongest: by their MO2 mod's priority, and within one mod by load order position
-    /// (a plugin outside the load order counts as lowest), then by settings list order.
-    /// </summary>
+    /// <summary>The settable properties of a record type whose values can hold form links.</summary>
+    private static IEnumerable<PropertyInfo> LinkProperties(Type recordType) =>
+        recordType.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(property => property.CanRead && property.CanWrite && property.GetIndexParameters().Length == 0)
+            .Where(property => property.PropertyType != typeof(string) && !property.PropertyType.IsPrimitive && !property.PropertyType.IsEnum);
+
+    /// <summary>The form links inside a property value: a link, a link container (models, scripts, effects, ...) or a list of either.</summary>
+    private static IEnumerable<IFormLinkGetter> LinksIn(object? value) => value switch
+    {
+        null or string => [],
+        IFormLinkGetter link => [link],
+        IFormLinkContainerGetter container => container.EnumerateFormLinks(),
+        IEnumerable items => items.Cast<object?>().SelectMany(LinksIn),
+        _ => [],
+    };
+
+    /// <summary>The sources from weakest to strongest: by load order position (later wins), then by settings list order.</summary>
     private static IReadOnlyList<LookSource> InPrecedenceOrder(IReadOnlyList<LookSource> sources, IReadOnlyList<ISkyrimModGetter> loadOrder)
     {
         var positions = loadOrder.Select((mod, index) => (mod.ModKey, index)).ToDictionary(pair => pair.ModKey, pair => pair.index);
         return sources
             .Select((source, listIndex) => (source, listIndex))
-            .OrderBy(entry => entry.source.ModPriority)
-            .ThenBy(entry => entry.source.InLoadOrder && positions.TryGetValue(entry.source.ModKey, out var position) ? position : -1)
+            .OrderBy(entry => positions.TryGetValue(entry.source.ModKey, out var position) ? position : -1)
             .ThenBy(entry => entry.listIndex)
             .Select(entry => entry.source)
             .ToList();

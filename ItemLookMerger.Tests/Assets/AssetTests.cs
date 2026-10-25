@@ -26,7 +26,7 @@ public class AssetTests
             _log,
             isVanilla: path => path.StartsWith(@"Textures\Vanilla\", StringComparison.OrdinalIgnoreCase));
 
-    private static LookSource Source(string plugin, string mod, int priority) => new(TestPlugins.NewMod(plugin), InLoadOrder: false, mod, priority);
+    private static LookSource Source(string plugin, string mod, int priority) => new(TestPlugins.NewMod(plugin), mod, priority);
 
     [Theory]
     [InlineData(@"textures\armor\x_d.dds", @"textures\armor\x_d.dds")]

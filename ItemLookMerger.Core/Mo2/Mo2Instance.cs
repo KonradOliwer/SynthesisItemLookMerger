@@ -153,71 +153,13 @@ public sealed class Mo2Instance
     public ModListEntry? FindModWithFile(string dataRelativePath, string? exceptMod = null) =>
         ModsByPreference(exceptMod).FirstOrDefault(mod => _fileSystem.File.Exists(_fileSystem.Path.Combine(ModFolder(mod.Name), dataRelativePath)));
 
-    /// <summary>Where this profile's mods are looked for, for the verbose log and failure messages.</summary>
+    /// <summary>Where this profile's mods are looked for, for the verbose log.</summary>
     public string DescribeModSearch()
     {
         var real = Mods.Where(mod => mod.Name != OverwriteName).ToList();
         var enabled = real.Count(mod => mod.Enabled);
         return $"mods folder {ModsDirectory}{(_fileSystem.Directory.Exists(ModsDirectory) ? "" : " (it does not exist)")}, Overwrite {Folders.OverwriteDirectory}, "
             + $"{real.Count} mods in {ModListPath} ({enabled} enabled, {real.Count - enabled} disabled)";
-    }
-
-    /// <summary>The modlist.txt entry named <paramref name="modName"/> (case is ignored, as on Windows), or null; Overwrite is no entry.</summary>
-    public ModListEntry? FindListedMod(string modName) =>
-        Mods.FirstOrDefault(mod => mod.Name != OverwriteName && string.Equals(mod.Name, modName, StringComparison.OrdinalIgnoreCase));
-
-    /// <summary>The plugin files (.esm, .esp, .esl) at the top of a mod folder, by name; subfolders are not searched, as MO2 loads none from them.</summary>
-    public IReadOnlyList<string> TopLevelPlugins(string modName)
-    {
-        var folder = ModFolder(modName);
-        return _fileSystem.Directory.Exists(folder)
-            ? _fileSystem.Directory.EnumerateFiles(folder)
-                .Select(file => _fileSystem.Path.GetFileName(file))
-                .Where(name => PluginExtensions.Contains(_fileSystem.Path.GetExtension(name), StringComparer.OrdinalIgnoreCase))
-                .Order(StringComparer.OrdinalIgnoreCase)
-                .ToList()
-            : [];
-    }
-
-    /// <summary>
-    /// Up to <paramref name="count"/> modlist.txt mods named like <paramref name="modName"/>, ignoring case: names that contain it
-    /// or that it contains first, then names a few edits away, closest first.
-    /// </summary>
-    public IReadOnlyList<string> SuggestMods(string modName, int count = 3)
-    {
-        var wanted = modName.ToUpperInvariant();
-        // Roughly a third of the name may be mistyped, at least two characters.
-        var maxEdits = Math.Max(2, wanted.Length / 3);
-        return Mods
-            .Where(mod => mod.Name != OverwriteName)
-            .Select(mod =>
-            {
-                var name = mod.Name.ToUpperInvariant();
-                var contains = name.Contains(wanted, StringComparison.Ordinal) || wanted.Contains(name, StringComparison.Ordinal);
-                return (mod.Name, Contains: contains, Edits: EditDistance(wanted, name));
-            })
-            .Where(candidate => candidate.Contains || candidate.Edits <= maxEdits)
-            .OrderBy(candidate => candidate.Contains ? 0 : 1)
-            .ThenBy(candidate => candidate.Edits)
-            .ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
-            .Take(count)
-            .Select(candidate => candidate.Name)
-            .ToList();
-    }
-
-    /// <summary>The Levenshtein distance: the fewest single-character insertions, deletions and substitutions from one text to the other.</summary>
-    private static int EditDistance(string from, string to)
-    {
-        var previous = Enumerable.Range(0, to.Length + 1).ToArray();
-        var current = new int[to.Length + 1];
-        for (var i = 1; i <= from.Length; i++)
-        {
-            current[0] = i;
-            for (var j = 1; j <= to.Length; j++)
-                current[j] = Math.Min(Math.Min(current[j - 1] + 1, previous[j] + 1), previous[j - 1] + (from[i - 1] == to[j - 1] ? 0 : 1));
-            (previous, current) = (current, previous);
-        }
-        return previous[to.Length];
     }
 
     /// <summary>

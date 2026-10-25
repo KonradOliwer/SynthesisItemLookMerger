@@ -36,7 +36,7 @@ internal static class Mo2Fixtures
     public const string PortableData = @"C:\Games\Skyrim Special Edition\Data";
     public const string LocalAppData = @"C:\Users\me\AppData\Local";
     public const string GlobalInstanceName = "Skyrim SE";
-    public const string GlobalBase = @"E:\Modding\SkyrimSE";
+    public const string GlobalBase = @"E:\Mods\SkyrimSE";
     public const string GlobalData = @"D:\Steam\steamapps\common\Skyrim Special Edition\Data";
 
     /// <summary>The enabled plugins of the fixture profiles' plugins.txt, plus the game's Skyrim.esm.</summary>

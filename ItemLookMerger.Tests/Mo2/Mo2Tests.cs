@@ -13,7 +13,7 @@ public class Mo2Tests
     [InlineData(@"@ByteArray(C:\\Games\\Skyrim Special Edition)", @"C:\Games\Skyrim Special Edition")]
     [InlineData(@"@ByteArray(Survival \xc3\xa4)", "Survival ä")]
     [InlineData(@"""quoted \""value\""""", @"quoted ""value""")]
-    [InlineData(@"C:/Modding/MO2", "C:/Modding/MO2")]
+    [InlineData(@"C:/Games/MO2", "C:/Games/MO2")]
     [InlineData(@"  spaced  ", "spaced")]
     // Qt5 writes non-ASCII characters of plain (QString) values as \x plus the UTF-16 code unit, up to four hex digits.
     [InlineData(@"C:/Users/\x418\x432\x430\x43d/AppData", "C:/Users/Иван/AppData")]
@@ -71,8 +71,8 @@ public class Mo2Tests
 
         Assert.Equal(Path.Combine(Mo2Fixtures.LocalAppData, "ModOrganizer", Mo2Fixtures.GlobalInstanceName), instance.InstanceDirectory);
         Assert.Equal(Mo2Fixtures.GlobalBase, instance.BaseDirectory);
-        Assert.Equal(@"E:\Modding\SkyrimSE\my mods", instance.ModsDirectory);
-        Assert.Equal(@"E:\Modding\SkyrimSE\profiles", instance.ProfilesDirectory);
+        Assert.Equal(@"E:\Mods\SkyrimSE\my mods", instance.ModsDirectory);
+        Assert.Equal(@"E:\Mods\SkyrimSE\profiles", instance.ProfilesDirectory);
         Assert.Equal("Survival ä", instance.ProfileName);
         Assert.Equal(@"D:\Steam\steamapps\common\Skyrim Special Edition\Data", instance.GameDataDirectory);
     }

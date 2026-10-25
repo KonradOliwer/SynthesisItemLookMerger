@@ -21,7 +21,7 @@ public sealed record AssetCopyResult(int Copied, int BaseGameSkipped, int FromOt
 internal sealed class AssetCopier
 {
     private readonly Mo2Instance _mo2;
-    private readonly string _forwardFolder;
+    private readonly string _targetFolder;
     private readonly string _forwardFolderName;
     private readonly IFileSystem _fileSystem;
     private readonly ILog _log;
@@ -32,12 +32,13 @@ internal sealed class AssetCopier
     /// <param name="dataFolder">The game's Data folder as this run sees it (MO2's virtual view of the enabled mods and the game).</param>
     /// <param name="loadOrder">The load order's plugins, to tell which ones are the game's own (no MO2 mod holds them).</param>
     /// <param name="isVanilla">Replaces the vanilla archive check (tests have no BSA files).</param>
+    /// <param name="targetFolder">Where the files are written: the forward folder's staging folder, or the forward folder itself.</param>
     private AssetCopier(
         Mo2Instance mo2, string forwardFolder, string dataFolder, IReadOnlyList<ModKey> loadOrder, IFileSystem fileSystem, ILog log,
-        Func<string, bool>? isVanilla)
+        Func<string, bool>? isVanilla, string? targetFolder)
     {
         _mo2 = mo2;
-        _forwardFolder = forwardFolder;
+        _targetFolder = targetFolder ?? forwardFolder;
         _forwardFolderName = fileSystem.Path.GetFileName(forwardFolder);
         _fileSystem = fileSystem;
         _log = log;
@@ -47,8 +48,8 @@ internal sealed class AssetCopier
 
     public static AssetCopyResult Copy(
         IReadOnlyList<AssetNeed> needs, Mo2Instance mo2, string forwardFolder, string dataFolder, IReadOnlyList<ModKey> loadOrder,
-        IFileSystem fileSystem, ILog log, Func<string, bool>? isVanilla = null) =>
-        new AssetCopier(mo2, forwardFolder, dataFolder, loadOrder, fileSystem, log, isVanilla).CopyAll(needs);
+        IFileSystem fileSystem, ILog log, Func<string, bool>? isVanilla = null, string? targetFolder = null) =>
+        new AssetCopier(mo2, forwardFolder, dataFolder, loadOrder, fileSystem, log, isVanilla, targetFolder).CopyAll(needs);
 
     /// <summary>
     /// The game's real vanilla content: the BSAs in Data that belong to the game's own plugins (Skyrim.esm, the DLCs, Creation Club;
@@ -127,7 +128,7 @@ internal sealed class AssetCopier
                 _log.Warning($"Asset {path}: {winner.Source.ModKey}'s mod and {other.Source.ModKey}'s mod both have it, with different content; the higher-priority mod's (\"{winner.Source.ModName}\") is copied.");
         }
 
-        var target = AssetPath.Inside(_fileSystem, _forwardFolder, path);
+        var target = AssetPath.Inside(_fileSystem, _targetFolder, path);
         if (target == null)
         {
             _log.Warning($"{winner.Item}: asset path \"{path}\" would leave the forward folder; it is not copied.");
