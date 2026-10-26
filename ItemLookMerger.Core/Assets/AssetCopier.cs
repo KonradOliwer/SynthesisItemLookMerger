@@ -15,8 +15,8 @@ public sealed record AssetCopyResult(int Copied, int BaseGameSkipped, int FromOt
 /// <summary>
 /// Step 6: copies the assets of the look sources (enabled or not; never the stats side's) from their MO2 mod (loose files, then the
 /// plugin's BSAs) into the forward folder. When several look sources need the same path, the one whose mod has the higher MO2 priority
-/// provides it. A copied NIF adds the textures it uses. A path no look source's mod has is never copied: a vanilla asset is skipped
-/// silently, anything else is warned about, naming the mod that has it.
+/// provides it. A copied NIF adds the textures it uses. A path no look source's mod has is never copied: a base-game asset (even one
+/// a replacer mod overrides) is skipped silently, anything else is warned about, naming the mod that has it.
 /// </summary>
 internal sealed class AssetCopier
 {
@@ -151,16 +151,17 @@ internal sealed class AssetCopier
             : $"is not in {need.Source.ModKey}'s mod \"{need.Source.ModName}\"";
         string Warn(string from) => $"{need.Item}: asset {path} {notIn} and was not copied; {from}.";
 
+        // A base-game path counts as vanilla even when a replacer mod overrides it.
+        if (_isVanilla(path))
+        {
+            _log.Verbose($"Asset {path}: not in a look source's mod, found in the vanilla archives; skipped.");
+            return Origin.Vanilla;
+        }
         var looseMod = _mo2.FindModWithFile(path, exceptMod: _forwardFolderName);
         if (looseMod is { Enabled: true })
         {
             _log.Warning(Warn($"it comes from MO2 mod \"{looseMod.Name}\""));
             return Origin.OtherMod;
-        }
-        if (_isVanilla(path))
-        {
-            _log.Verbose($"Asset {path}: not in a look source's mod, found in the vanilla archives; skipped.");
-            return Origin.Vanilla;
         }
         if (_dataFolder.LooseExists(path))
         {

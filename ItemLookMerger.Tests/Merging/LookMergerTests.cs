@@ -5,6 +5,7 @@ using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
+using Noggog;
 
 namespace ItemLookMerger.Tests.Merging;
 
@@ -55,6 +56,24 @@ public class LookMergerTests
         Assert.Contains(@"Textures\Armor\Fancy\Fancy_d.dds", assets);
         Assert.DoesNotContain(assets, path => path.Contains(@"\Iron\", StringComparison.OrdinalIgnoreCase));
         Assert.All(result.Assets, asset => Assert.Equal(look.ModKey, asset.Source.ModKey));
+    }
+
+    [Fact]
+    public void An_items_object_bounds_are_part_of_its_look_and_come_from_the_look_plugin()
+    {
+        var look = TestPlugins.NewMod("Look.esp");
+        var lookSword = look.Weapons.GetOrAddAsOverride(_plugins.Sword);
+        lookSword.ObjectBounds.First = new P3Int16(-3, -4, -5);
+        lookSword.ObjectBounds.Second = new P3Int16(3, 4, 5);
+        lookSword.BasicStats = new WeaponBasicStats { Value = 1 };
+
+        var result = Merge(_plugins.LoadOrder(look), forwardNames: false, new LookSource(look, "Look Mod"));
+
+        var patched = Assert.Single(_plugins.Patch.Weapons);
+        Assert.Equal(new P3Int16(-3, -4, -5), patched.ObjectBounds.First);
+        Assert.Equal(new P3Int16(3, 4, 5), patched.ObjectBounds.Second);
+        Assert.Equal(77u, patched.BasicStats!.Value);
+        Assert.Equal(new[] { "ObjectBounds" }, Assert.Single(result.Changes).Fields);
     }
 
     [Fact]

@@ -9,7 +9,7 @@ using Noggog;
 namespace ItemLookMerger.Core.Merging;
 
 /// <summary>
-/// The look of an item: Model and Icons on every type, plus Armor.WorldModel and Armor.Armature, Weapon.ScopeModel and
+/// The look of an item: Model, Icons and ObjectBounds on every type, plus Armor.WorldModel and Armor.Armature, Weapon.ScopeModel and
 /// Weapon.FirstPersonModel, Book.InventoryArt, and Name when names are forwarded. Everything else is stats and stays the winner's.
 /// </summary>
 internal static class LookFields
@@ -27,6 +27,9 @@ internal static class LookFields
             Check("Model", SameModel(sourceModeled.Model, winnerModeled.Model));
         if (source is IHasIconsGetter sourceIcons && winner is IHasIconsGetter winnerIcons)
             Check("Icons", SameIcons(sourceIcons.Icons, winnerIcons.Icons));
+        if (source is IObjectBoundedGetter sourceBounded && winner is IObjectBoundedGetter winnerBounded)
+            Check("ObjectBounds", sourceBounded.ObjectBounds.First == winnerBounded.ObjectBounds.First
+                && sourceBounded.ObjectBounds.Second == winnerBounded.ObjectBounds.Second);
         switch (source, winner)
         {
             case (IArmorGetter s, IArmorGetter w):
@@ -52,6 +55,11 @@ internal static class LookFields
             targetModeled.Model = sourceModeled.Model?.DeepCopy();
         if (target is IHasIcons targetIcons && source is IHasIconsGetter sourceIcons)
             targetIcons.Icons = sourceIcons.Icons?.DeepCopy();
+        if (target is IObjectBounded targetBounded && source is IObjectBoundedGetter sourceBounded)
+        {
+            targetBounded.ObjectBounds.First = sourceBounded.ObjectBounds.First;
+            targetBounded.ObjectBounds.Second = sourceBounded.ObjectBounds.Second;
+        }
         switch (target, source)
         {
             case (IArmor t, IArmorGetter s):

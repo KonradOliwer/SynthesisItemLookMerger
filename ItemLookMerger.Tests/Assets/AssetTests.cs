@@ -77,6 +77,23 @@ public class AssetTests
     }
 
     [Fact]
+    public void A_base_game_path_a_replacer_mod_overrides_is_skipped_without_a_warning_and_a_mod_only_path_is_warned()
+    {
+        _fileSystem.AddFile(Path.Combine(Mods, "Base Fixes", @"Textures\Vanilla\replaced_d.dds"), new MockFileData([2]));
+        _fileSystem.AddFile(Path.Combine(Mods, "Base Fixes", @"Textures\Armor\Fancy\modonly_d.dds"), new MockFileData([3]));
+        var source = Source("Look.esp", "Disabled Looks", 5);
+
+        var result = Copy(
+            new AssetNeed(@"Textures\Vanilla\replaced_d.dds", "ArmorIronCuirass", source),
+            new AssetNeed(@"Textures\Armor\Fancy\modonly_d.dds", "ArmorIronCuirass", source));
+
+        Assert.Equal(new AssetCopyResult(Copied: 0, BaseGameSkipped: 1, FromOtherMods: 1), result);
+        Assert.False(_fileSystem.File.Exists(Path.Combine(Forward, @"Textures\Vanilla\replaced_d.dds")));
+        Assert.DoesNotContain(_log.Warnings, warning => warning.Contains("replaced_d.dds"));
+        Assert.Contains(_log.Warnings, warning => warning.Contains("modonly_d.dds") && warning.Contains("\"Base Fixes\""));
+    }
+
+    [Fact]
     public void A_path_two_look_mods_provide_comes_from_the_higher_priority_mod_with_a_warning_when_they_differ()
     {
         _fileSystem.AddFile(Path.Combine(Mods, "Better Iron Armor", @"Textures\Steel\steel.dds"), new MockFileData([1]));

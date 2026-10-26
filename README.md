@@ -7,8 +7,8 @@ whichever plugin wins them otherwise. Look mods no longer have to win the record
 
 **Items covered:** armor, weapons, ammunition, misc items, books, ingredients, potions and food, soul gems, keys.
 
-**Look** (taken from the look plugins): world and inventory models with their alternate textures, icons, armor addons, first-person
-and scope models, book inventory art, and the name when **Forward names** is on.
+**Look** (taken from the look plugins): world and inventory models with their alternate textures, icons, object bounds, armor
+addons, first-person and scope models, book inventory art, and the name when **Forward names** is on.
 
 **Forms the look depends on:** for every item a look plugin changes, the patcher follows the links in the look fields, and from
 there the links in the visual fields of each form it reaches. It only goes on through forms a look plugin contains (adds or
@@ -73,7 +73,7 @@ Armor slot classes come from the biped slots: **shield** when the shield slot is
 or ears slot and no head, hair, body, hands, forearms, feet, calves or long hair slot; **body armor** otherwise. A weapon without
 weapon data or an armor without a body template has no type to compare.
 
-A wide change is not merged: the item is left untouched, and the log names it at error level with both types and both plugins. The setting only decides narrow changes:
+A wide change is not merged: the item is left untouched, and the log names it as an error with both types and both plugins. The setting only decides narrow changes:
 
 - `TakeVisualModWeaponType` (default): a weapon takes the type-related stats of a base item (below); an armor keeps your modlist's type
   and the look is forwarded. The log counts such armors in one line, and lists them with Verbose logging.
@@ -86,13 +86,15 @@ The base item is a generic weapon of the look's type and of the stats side's mat
 for a one-handed sword that looks like a greatsword.
 
 1. The look record's **template** is used when it is such a weapon itself.
-2. Otherwise the best weapon that passes the same rules. It has the look's animation type and the same weapon-type keywords
-   (`WeapType...`) as the look record, and the same material keywords (`WeapMaterial...`, `DLC1WeapMaterial...`,
-   `DLC2WeaponMaterial...`) as the stats side, or as the look record when the stats side has none. It is playable, not enchanted,
-   not bound, player-only, undroppable or reserved for non-combat use, without a template, and has weapon data and damage and weight.
-   It has to have a weapon-type and a material keyword, and a look plugin must not have introduced it or retype it.
-3. Among several: the vanilla masters first (Skyrim, Update, Dawnguard, HearthFires, Dragonborn), then weapons without scripts,
-   then the plugin earlier in the load order, then the lowest FormID.
+2. Otherwise the best weapon that passes the same rules. It has the look's animation type, shares a weapon-type keyword
+   (`WeapType...`) with the look record, and carries at least one of the stats side's material keywords (`WeapMaterial...`,
+   `DLC1WeapMaterial...`, `DLC2WeaponMaterial...`), or of the look record's when the stats side has none; other keywords it has do
+   not matter. It is playable, not enchanted, not bound, player-only, undroppable or reserved for non-combat use, without a
+   template, and has weapon data and damage and weight. It has to have a weapon-type and a material keyword, and a look plugin must
+   not have introduced it or retype it.
+3. Among several: the one sharing the most material keywords, then the most weapon-type keywords, then the vanilla masters first
+   (Skyrim, Update, Dawnguard, HearthFires, Dragonborn), then weapons without scripts, then the plugin earlier in the load order,
+   then the lowest FormID.
 
 A base item's stats are those its own stats side has (an earlier patcher's version before this run, else the winning non-look
 plugin), so they do not depend on the order items are processed. When a look plugin is the only plugin overriding the base item,
@@ -104,7 +106,7 @@ embedded actor value, range, on-hit, attack multiplier, rumble, skill, stagger, 
 when the base has none), equipment type, block and bash and alternate block impact data, the pickup, putdown, attack, idle, equip
 and unequip sounds, detection sound level, and the weapon-type and material keywords.
 
-**Kept from the stats side:** name, value, enchantment, scripts, description, destructible, template, object bounds, resist, the
+**Kept from the stats side:** name, value, enchantment, scripts, description, destructible, template, resist, the
 item flags (ignores normal weapon resistance, can't drop, non-playable, player only, minor crime, non-hostile, bound weapon) and all
 other keywords. The look fields come from the look record.
 
@@ -132,7 +134,8 @@ with the meshes and textures the forwarded looks need, including the textures in
   stats side or any other mod.
 - Files are copied only from the look mods: their loose files first, then their BSAs. The other weight's mesh of an armor addon is
   copied too.
-- Base-game files are skipped. Files that only another mod provides are not copied, and the log says where they come from.
+- Base-game files (the game's and its DLCs' and Creation Club archives) are skipped, also when a replacer mod overrides them. Files
+  that only another mod provides are not copied, and the log warns and says where they come from.
 - When two look mods have the same file, the one with the higher priority in MO2's left panel provides it.
 - The new content is written completely before it replaces the old, so a failed run keeps the previous output. The patcher only
   manages a folder it created (marked by a hidden `.itemlookmerger` file).
@@ -163,3 +166,9 @@ Data folder. Copies of one profile with an identical mod list count as one.
 | **Verbose logging** | off | Log every item, field and asset decision. |
 | **Content merging → Allow merging** | on | Self-contained patch and asset copying, as described above. |
 | **Content merging → Forward folder name** | `OUTPUT ItemLookMerger` | The MO2 mod folder (directly in the mods folder) that receives the assets and CREDITS.md. Its content is replaced on every run, so use it for nothing else. |
+
+## Log
+
+Synthesis has two log levels for a patcher: standard output is information and standard error is error. Errors go to standard
+error, so Synthesis shows them at error level (after the run's other lines). Warnings are standard output lines starting with
+`Warning:`, in order with the rest of the log; Synthesis shows them at information level.

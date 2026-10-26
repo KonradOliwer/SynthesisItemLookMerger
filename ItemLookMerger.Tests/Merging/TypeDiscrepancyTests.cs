@@ -5,6 +5,7 @@ using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
+using Noggog;
 
 namespace ItemLookMerger.Tests.Merging;
 
@@ -255,6 +256,50 @@ public class TypeDiscrepancyTests
 
         Assert.Equal((ushort)18, PatchedWeapon("PlainBlade").BasicStats!.Damage);
         Assert.Equal(["WeapTypeGreatsword", "WeapMaterialSteel"], KeywordNames(PatchedWeapon("PlainBlade")));
+    }
+
+    [Fact]
+    public void A_weapon_taking_a_base_items_type_stats_still_takes_the_look_records_object_bounds()
+    {
+        _ironGreatsword.ObjectBounds.Second = new P3Int16(50, 50, 50);
+        _stats.Weapons.GetOrAddAsOverride(_unique).ObjectBounds.Second = new P3Int16(7, 7, 7);
+        LookOverride(_unique, WeaponAnimationType.TwoHandSword, _greatsword, _iron).ObjectBounds.Second = new P3Int16(9, 8, 7);
+
+        Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Equal(new P3Int16(9, 8, 7), PatchedWeapon("UniqueBlade").ObjectBounds.Second);
+    }
+
+    [Fact]
+    public void A_unique_item_with_several_materials_and_extra_keywords_takes_the_base_sharing_most_of_its_materials()
+    {
+        var (battleaxe, nordic) = (_skyrim.Keywords.AddNew("WeapTypeBattleaxe"), _skyrim.Keywords.AddNew("DLC2WeaponMaterialNordic"));
+        var stormfang = WithStatsOverride(NewWeapon(
+            _skyrim, "Stormfang", WeaponAnimationType.TwoHandSword, 1f, 1f, 20, 10f, _bothHands, _swingGreat, _greatsword, _steel, nordic, _vendor));
+        LookOverride(stormfang, WeaponAnimationType.TwoHandAxe, battleaxe, _iron);
+        NewWeapon(_skyrim, "IronBattleaxe", WeaponAnimationType.TwoHandAxe, 1f, 1f, 30, 20f, _bothHands, _swingGreat, battleaxe, _iron);
+        NewWeapon(_skyrim, "SteelBattleaxe", WeaponAnimationType.TwoHandAxe, 1f, 1f, 31, 20f, _bothHands, _swingGreat, battleaxe, _steel);
+        NewWeapon(_skyrim, "NordicSteelBattleaxe", WeaponAnimationType.TwoHandAxe, 1f, 1f, 32, 20f, _bothHands, _swingGreat, battleaxe, nordic, _steel, _vendor);
+
+        var result = Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Equal("NordicSteelBattleaxe", result.Changes.Single().Base!.EditorID);
+        Assert.Equal(WeaponAnimationType.TwoHandAxe, PatchedWeapon("Stormfang").Data!.AnimationType);
+        Assert.Equal(["VendorItemWeapon", "WeapTypeBattleaxe", "DLC2WeaponMaterialNordic", "WeapMaterialSteel"], KeywordNames(PatchedWeapon("Stormfang")));
+    }
+
+    [Fact]
+    public void A_base_candidate_with_extra_materials_still_matches_one_stats_material_but_not_another_animation_type()
+    {
+        var battleaxe = _skyrim.Keywords.AddNew("WeapTypeBattleaxe");
+        var steelBlade = WithStatsOverride(NewWeapon(_skyrim, "SteelBlade", WeaponAnimationType.OneHandSword, 1f, 1f, 12, 6f, _rightHand, _swingSword, _sword, _steel));
+        LookOverride(steelBlade, WeaponAnimationType.TwoHandAxe, battleaxe);
+        NewWeapon(_skyrim, "SteelWarAxe", WeaponAnimationType.OneHandAxe, 1f, 1f, 33, 20f, _rightHand, _swingSword, battleaxe, _steel);
+        NewWeapon(_skyrim, "SteelIronBattleaxe", WeaponAnimationType.TwoHandAxe, 1f, 1f, 34, 20f, _bothHands, _swingGreat, battleaxe, _iron, _steel);
+
+        var result = Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Equal("SteelIronBattleaxe", result.Changes.Single().Base!.EditorID);
     }
 
     [Fact]
