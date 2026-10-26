@@ -134,6 +134,18 @@ with the meshes and textures the forwarded looks need, including the textures in
   stats side or any other mod.
 - Files are copied only from the look mods: their loose files first, then their BSAs. The other weight's mesh of an armor addon is
   copied too.
+- A copied mesh also brings the files it names inside: the SMP physics config of its `HDT Skinned Mesh Physics Object` data (a path
+  relative to Data) and the `.tri` morph file of its `BODYTRI` data (a path relative to `meshes`). They are copied from the look
+  mod like textures, and the same rules below apply to them.
+- BodySlide: when a look mod's `CalienteTools\BodySlide\SliderSets\*.osp` project builds a mesh being copied (its output path and
+  file, with `_0` and `_1` when it generates weights), the project, its `ShapeData` folder and the `SliderGroups` files that list
+  its slider set are copied too. Only loose files count (BSAs hold none), and a project file that is not valid XML is skipped with a
+  warning.
+- A mesh that such a project builds is left out when the BodySlide output provides it. The BodySlide output is a loose file in an
+  enabled MO2 mod, or in Overwrite, that is not a look mod (any mod holding a listed look plugin) and not the forward folder; a mesh
+  in a BSA or in a disabled mod does not count. The log names the mod. Its textures and the files it names are still copied. When
+  nothing provides it, the look mod's prebuilt mesh is copied and the log says you can rebuild it with BodySlide.
+- When two look mods have the same BodySlide project or `ShapeData` file, the one from the higher-priority look mod is copied.
 - Base-game files (the game's and its DLCs' and Creation Club archives) are skipped, also when a replacer mod overrides them. Files
   that only another mod provides are not copied, and the log warns and says where they come from.
 - When two look mods have the same file, the one with the higher priority in MO2's left panel provides it.
@@ -148,7 +160,7 @@ One row per changed item: its EditorID, name and FormKey, the look plugins it ta
 forms its look depends on) and the plugin its stats come from, each with its MO2 mod. A weapon that took its type from a base item names that
 base item and the plugin its stats came from. Below that, each mod's Nexus link, version and download file as recorded in MO2;
 base-game plugins and mods without a `meta.ini` are listed by plugin name only. It is written to the forward folder with merging
-on, and next to the Synthesis output with merging off.
+on; with merging off none is written, as the look mods stay in the modlist.
 
 ## MO2 instance and profile
 
@@ -165,7 +177,7 @@ Data folder. Copies of one profile with an identical mod list count as one.
 | **In case of type discrepancy** | `TakeVisualModWeaponType` | What to do when the look's weapon or armor type differs narrowly from the stats (see Type discrepancies): `TakeVisualModWeaponType` (weapons take the type stats of a generic base item, armor keeps the modlist type), `TakeModlistItemType` (the stats keep their type, the look is forwarded anyway) or `SkipMerging` (the item is not changed and the log names it). Wide changes are always skipped. |
 | **Verbose logging** | off | Log every item, field and asset decision. |
 | **Content merging → Allow merging** | on | Self-contained patch and asset copying, as described above. |
-| **Content merging → Forward folder name** | `OUTPUT ItemLookMerger` | The MO2 mod folder (directly in the mods folder) that receives the assets and CREDITS.md. Its content is replaced on every run, so use it for nothing else. |
+| **Content merging → Forward folder name** | `OUTPUT ItemLookMerger` | The MO2 mod folder (directly in the mods folder) that receives the assets and CREDITS.md (used only with merging on). Its content is replaced on every run, so use it for nothing else. |
 
 ## Log
 

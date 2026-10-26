@@ -161,6 +161,12 @@ public sealed class Mo2Instance
     public ModListEntry? FindModWithFile(string dataRelativePath, string? exceptMod = null) =>
         ModsByPreference(exceptMod).FirstOrDefault(mod => _fileSystem.File.Exists(_fileSystem.Path.Combine(ModFolder(mod.Name), dataRelativePath)));
 
+    /// <summary>The highest-priority enabled mod that has <paramref name="dataRelativePath"/> as a loose file, other than <paramref name="exceptMods"/>.</summary>
+    public ModListEntry? FindEnabledModWithFile(string dataRelativePath, params string?[] exceptMods) =>
+        ModsByPreference(null)
+            .Where(mod => mod.Enabled && !exceptMods.Contains(mod.Name, StringComparer.OrdinalIgnoreCase))
+            .FirstOrDefault(mod => _fileSystem.File.Exists(_fileSystem.Path.Combine(ModFolder(mod.Name), dataRelativePath)));
+
     /// <summary>Where this profile's mods are looked for, for the verbose log.</summary>
     public string DescribeModSearch()
     {

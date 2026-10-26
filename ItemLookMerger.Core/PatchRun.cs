@@ -14,13 +14,11 @@ namespace ItemLookMerger.Core;
 /// The enabled plugins of Synthesis's full listing (<c>RawLoadOrder</c>) without the patch, also those below the patch's line that
 /// <paramref name="LoadOrder"/> lacks. The MO2 profile is verified against them.
 /// </param>
-/// <param name="OutputPath">The patch file Synthesis writes; CREDITS.md goes next to it when merging is off.</param>
 /// <param name="DataFolder">The game's Data folder as Synthesis sees it (under MO2, its virtual view of the enabled mods).</param>
 public sealed record RunInputs(
     IReadOnlyList<ISkyrimModGetter> LoadOrder,
     IReadOnlyList<ModKey> EnabledPlugins,
     ISkyrimMod Patch,
-    string OutputPath,
     string DataFolder,
     MergeOptions Options,
     IMo2Environment Mo2Environment,
@@ -51,7 +49,8 @@ public static class PatchRun
         string Credits() => CreditsWriter.Build(result.Changes, plugin => CreditsWriter.Origin(mo2, sources, plugin));
 
         AssetCopyResult? assets = null;
-        string creditsPath;
+        // With merging off the look mods stay in the modlist, so there are no credits to write.
+        string? creditsPath = null;
         if (forwardFolder != null)
         {
             // Assets and credits are written into a staging folder and swapped in at the end, so a failed copy keeps the previous output.
@@ -59,7 +58,7 @@ public static class PatchRun
             try
             {
                 if (result.Assets.Count > 0)
-                    assets = AssetCopier.Copy(result.Assets, mo2, forwardFolder, inputs.DataFolder, loadOrderKeys, fileSystem, log, targetFolder: staging);
+                    assets = AssetCopier.Copy(result.Assets, mo2, forwardFolder, inputs.DataFolder, loadOrderKeys, fileSystem, log, targetFolder: staging, lookSources: sources);
                 fileSystem.File.WriteAllText(fileSystem.Path.Combine(staging, CreditsWriter.FileName), Credits());
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -77,20 +76,13 @@ public static class PatchRun
             ForwardFolder.CommitStaging(fileSystem, forwardFolder, staging, log);
             creditsPath = fileSystem.Path.Combine(forwardFolder, CreditsWriter.FileName);
         }
-        else
-        {
-            var creditsFolder = fileSystem.Path.GetDirectoryName(fileSystem.Path.GetFullPath(inputs.OutputPath))!;
-            creditsPath = fileSystem.Path.Combine(creditsFolder, CreditsWriter.FileName);
-            fileSystem.Directory.CreateDirectory(creditsFolder);
-            fileSystem.File.WriteAllText(creditsPath, Credits());
-        }
 
         PrintSummary(result, assets, sources, creditsPath, options.AllowMerging, log);
         return result;
     }
 
     private static void PrintSummary(
-        MergeResult result, AssetCopyResult? assets, IReadOnlyList<LookSource> sources, string creditsPath, bool selfContained, CountingLog log)
+        MergeResult result, AssetCopyResult? assets, IReadOnlyList<LookSource> sources, string? creditsPath, bool selfContained, CountingLog log)
     {
         var (warnings, errors) = (log.Warnings, log.Errors);
         log.Info("--- Summary ---");
@@ -124,7 +116,7 @@ public static class PatchRun
             log.Info(
                 $"Assets copied: {assets.Copied}. Vanilla assets skipped: {assets.BaseGameSkipped}. "
                 + $"Assets from other mods (warned): {assets.FromOtherMods}. Missing assets (warned): {assets.Missing}.");
-        log.Info($"Credits: {creditsPath}");
+        if (creditsPath != null) log.Info($"Credits: {creditsPath}");
         log.Info($"Warnings: {warnings}. Errors: {errors}.");
     }
 

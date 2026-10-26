@@ -15,7 +15,8 @@ public sealed record AssetCopyResult(int Copied, int BaseGameSkipped, int FromOt
 /// <summary>
 /// Step 6: copies the assets of the look sources (enabled or not; never the stats side's) from their MO2 mod (loose files, then the
 /// plugin's BSAs) into the forward folder. When several look sources need the same path, the one whose mod has the higher MO2 priority
-/// provides it. A copied NIF adds the textures it uses. A path no look source's mod has is never copied: a base-game asset (even one
+/// provides it. A copied NIF adds the textures, SMP configs and .tri files it uses, and the BodySlide projects that build it (the
+/// mesh itself is left out when another enabled mod provides it). A path no look source's mod has is never copied: a base-game asset (even one
 /// a replacer mod overrides) is skipped silently, anything else is warned about, naming the mod that has it.
 /// </summary>
 internal sealed class AssetCopier
@@ -28,6 +29,10 @@ internal sealed class AssetCopier
     private readonly Func<string, bool> _isVanilla;
     private readonly AssetFolder _dataFolder;
     private readonly Dictionary<ModKey, AssetFolder?> _sourceFolders = [];
+    private readonly Dictionary<string, BodySlideProjects> _bodySlide = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The BodySlide files written so far, with the MO2 priority of the mod they came from (a higher-priority mod replaces them).</summary>
+    private readonly Dictionary<string, int> _bodySlideCopied = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _lookMods = new(StringComparer.OrdinalIgnoreCase);
 
     /// <param name="dataFolder">The game's Data folder as this run sees it (MO2's virtual view of the enabled mods and the game).</param>
     /// <param name="loadOrder">The load order's plugins, to tell which ones are the game's own (no MO2 mod holds them).</param>
@@ -48,8 +53,9 @@ internal sealed class AssetCopier
 
     public static AssetCopyResult Copy(
         IReadOnlyList<AssetNeed> needs, Mo2Instance mo2, string forwardFolder, string dataFolder, IReadOnlyList<ModKey> loadOrder,
-        IFileSystem fileSystem, ILog log, Func<string, bool>? isVanilla = null, string? targetFolder = null) =>
-        new AssetCopier(mo2, forwardFolder, dataFolder, loadOrder, fileSystem, log, isVanilla, targetFolder).CopyAll(needs);
+        IFileSystem fileSystem, ILog log, Func<string, bool>? isVanilla = null, string? targetFolder = null,
+        IReadOnlyList<LookSource>? lookSources = null) =>
+        new AssetCopier(mo2, forwardFolder, dataFolder, loadOrder, fileSystem, log, isVanilla, targetFolder).CopyAll(needs, lookSources ?? []);
 
     /// <summary>
     /// The game's real vanilla content: the BSAs in Data that belong to the game's own plugins (Skyrim.esm, the DLCs, Creation Club;
@@ -66,8 +72,10 @@ internal sealed class AssetCopier
                 && mo2.FindModWithFile(archive) == null);
     }
 
-    private AssetCopyResult CopyAll(IReadOnlyList<AssetNeed> needs)
+    private AssetCopyResult CopyAll(IReadOnlyList<AssetNeed> needs, IReadOnlyList<LookSource> lookSources)
     {
+        foreach (var source in lookSources.Concat(needs.Select(need => need.Source)))
+            if (source.ModName != null) _lookMods.Add(source.ModName);
         var done = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int copied = 0, baseGame = 0, otherMods = 0, missing = 0;
         var wave = needs.ToList();
@@ -88,8 +96,8 @@ internal sealed class AssetCopier
 
                 if (CopyFromLookSource(path, group.ToList()) is { } provider)
                 {
-                    copied++;
-                    next.AddRange(provider.Textures.Select(texture => provider.Need with { Path = texture }));
+                    copied += provider.Copied;
+                    next.AddRange(provider.References.Select(reference => provider.Need with { Path = reference }));
                     continue;
                 }
                 switch (Classify(path, first))
@@ -104,7 +112,9 @@ internal sealed class AssetCopier
         return new AssetCopyResult(copied, baseGame, otherMods, missing);
     }
 
-    private sealed record Provided(AssetNeed Need, IReadOnlyList<string> Textures);
+    /// <param name="References">The paths the copied NIF points at (textures, SMP configs, .tri files), to copy in turn.</param>
+    /// <param name="Copied">The files written, with any BodySlide files; 0 for a mesh left to the BodySlide output.</param>
+    private sealed record Provided(AssetNeed Need, IReadOnlyList<string> References, int Copied);
 
     /// <summary>
     /// Copies the path from the highest-priority look source whose mod has it, warning when another look source has different bytes.
@@ -134,11 +144,77 @@ internal sealed class AssetCopier
             _log.Warning($"{winner.Item}: asset path \"{path}\" would leave the forward folder; it is not copied.");
             return null;
         }
+        var isNif = path.EndsWith(".nif", StringComparison.OrdinalIgnoreCase);
+        var projects = isNif ? BodySlideFor(winner.Source) : null;
+        var sets = projects?.Producing(path) ?? [];
+        var count = 0;
+        // A mesh a BodySlide project builds is left to the BodySlide output: a loose file of an enabled mod (Overwrite too) that is
+        // neither a look mod nor the forward folder.
+        var builtBy = sets.Count == 0 ? null : _mo2.FindEnabledModWithFile(path, [.. _lookMods, _forwardFolderName]);
+        if (builtBy == null)
+        {
+            WriteFile(target, bytes!);
+            count++;
+            _log.Verbose($"Asset {path}: copied from MO2 mod \"{winner.Source.ModName}\".");
+        }
+        if (sets.Count > 0)
+        {
+            var projectNames = string.Join(", ", sets.Select(set => $"\"{set.Name}\"").Distinct());
+            _log.Info(builtBy != null
+                ? $"Mesh {path} is built by BodySlide project {projectNames}; it is left to the BodySlide output in MO2 mod \"{builtBy.Name}\" and the look mod's prebuilt mesh is not copied."
+                : $"Mesh {path} was copied prebuilt from MO2 mod \"{winner.Source.ModName}\"; you can rebuild it with BodySlide project {projectNames}.");
+            count += CopyBodySlideFiles(winner, projects!, sets);
+        }
+        return new Provided(winner, isNif ? NifReferences.Read(bytes!) : [], count);
+    }
+
+    private void WriteFile(string target, byte[] bytes)
+    {
         _fileSystem.Directory.CreateDirectory(_fileSystem.Path.GetDirectoryName(target)!);
-        _fileSystem.File.WriteAllBytes(target, bytes!);
-        _log.Verbose($"Asset {path}: copied from MO2 mod \"{winner.Source.ModName}\".");
-        var textures = path.EndsWith(".nif", StringComparison.OrdinalIgnoreCase) ? NifTextures.Read(bytes!) : [];
-        return new Provided(winner, textures);
+        _fileSystem.File.WriteAllBytes(target, bytes);
+    }
+
+    /// <summary>The look source's mod's BodySlide projects (read once per mod), or null when its plugin has no MO2 mod.</summary>
+    private BodySlideProjects? BodySlideFor(LookSource source)
+    {
+        if (source.ModName == null) return null;
+        if (!_bodySlide.TryGetValue(source.ModName, out var projects))
+        {
+            projects = BodySlideProjects.Read(_fileSystem, _mo2.ModFolder(source.ModName), source.ModName, _log);
+            _bodySlide[source.ModName] = projects;
+        }
+        return projects;
+    }
+
+    /// <summary>
+    /// Copies the slider sets' .osp files, their ShapeData folders and the SliderGroups naming them; returns the number of files newly
+    /// written. A file two look mods both have comes from the higher-priority mod, whichever is processed first.
+    /// </summary>
+    private int CopyBodySlideFiles(AssetNeed need, BodySlideProjects projects, IReadOnlyList<BodySlideSet> sets)
+    {
+        var files = new List<string>();
+        foreach (var set in sets)
+        {
+            files.Add(set.Project);
+            if (set.DataFolder != null) files.AddRange(projects.ShapeDataFiles(set.DataFolder));
+            files.AddRange(projects.Groups.Where(group => group.Members.Contains(set.Name)).Select(group => group.Path));
+        }
+
+        var count = 0;
+        foreach (var file in files)
+        {
+            var key = AssetPath.Key(file);
+            var written = _bodySlideCopied.TryGetValue(key, out var writtenPriority);
+            if (written && writtenPriority >= need.Source.ModPriority) continue;
+            var bytes = SourceFolder(need.Source)?.Read(file);
+            var target = AssetPath.Inside(_fileSystem, _targetFolder, file);
+            if (bytes == null || target == null) continue;
+            WriteFile(target, bytes);
+            _bodySlideCopied[key] = need.Source.ModPriority;
+            _log.Verbose($"BodySlide file {file}: copied from MO2 mod \"{need.Source.ModName}\".");
+            if (!written) count++;
+        }
+        return count;
     }
 
     private enum Origin { Vanilla, OtherMod, Missing }

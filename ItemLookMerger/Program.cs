@@ -57,7 +57,7 @@ public static class Program
         try
         {
             PatchRun.Run(new RunInputs(
-                loadOrder, enabledPlugins, state.PatchMod, state.OutputPath.Path, state.DataFolderPath.Path, options, mo2Environment, fileSystem,
+                loadOrder, enabledPlugins, state.PatchMod, state.DataFolderPath.Path, options, mo2Environment, fileSystem,
                 new ConsoleLog(settings.VerboseLogging)));
         }
         catch (RunFailedException ex)

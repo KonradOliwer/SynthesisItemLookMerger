@@ -13,7 +13,6 @@ namespace ItemLookMerger.Tests;
 
 public class PatchRunTests
 {
-    private const string OutputPath = @"C:\Synthesis\Output\ItemLookMerger.esp";
     private const string ForwardFolderName = "OUTPUT ItemLookMerger";
     private static readonly string Forward = Path.Combine(Mo2Fixtures.PortableMods, ForwardFolderName);
 
@@ -30,7 +29,7 @@ public class PatchRunTests
             .Concat(PluginsTxt.Entries(linesAfter).Where(entry => entry.Active && entry.Plugin != plugins.Patch.ModKey).Select(entry => entry.Plugin))
             .Distinct()
             .ToList();
-        return new(loadOrder, enabled, plugins.Patch, OutputPath, Mo2Fixtures.PortableData, options,
+        return new(loadOrder, enabled, plugins.Patch, Mo2Fixtures.PortableData, options,
             new FakeMo2Environment(Path.Combine(Mo2Fixtures.PortableFolder, "ModOrganizer.exe")), fileSystem, log);
     }
 
@@ -87,7 +86,7 @@ public class PatchRunTests
     }
 
     [Fact]
-    public void Without_merging_the_patch_keeps_the_look_plugin_as_a_master_and_the_credits_go_next_to_it()
+    public void Without_merging_the_patch_keeps_the_look_plugin_as_a_master_and_writes_no_credits()
     {
         var plugins = new TestPlugins();
         var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
@@ -101,8 +100,9 @@ public class PatchRunTests
         // The addon the look plugin added is a copy in the patch, not a link into the look plugin.
         Assert.Equal(plugins.Patch.ModKey, Assert.Single(plugins.Patch.Armors.Single().Armature).FormKey.ModKey);
         Assert.Single(plugins.Patch.ArmorAddons);
-        var credits = fileSystem.File.ReadAllText(@"C:\Synthesis\Output\CREDITS.md");
-        Assert.Contains("| ArmorIronCuirass | Iron Armor |", credits);
+        Assert.DoesNotContain(
+            fileSystem.AllFiles, file => file.EndsWith("CREDITS.md", StringComparison.OrdinalIgnoreCase) && !file.StartsWith(Forward, StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(log.Infos, line => line.StartsWith("Credits:", StringComparison.Ordinal));
         Assert.Contains(log.Infos, line => line.StartsWith("Items changed: 1.", StringComparison.Ordinal));
         AssertForwardFolderUntouched(fileSystem);
         Assert.Contains(log.Warnings, warning => warning.Contains("left as it is"));
