@@ -5,8 +5,8 @@ namespace ItemLookMerger.Core.Mo2;
 
 /// <summary>What Synthesis saw of the game: the Data folder, the enabled plugins of its load order and the patch.</summary>
 /// <param name="EnabledPlugins">
-/// The enabled plugins of Synthesis's full listing (<c>RawLoadOrder</c>) in order, including those after the patch's line (which
-/// Synthesis trims from <c>LoadOrder</c>), without the patch and without repeats.
+/// The enabled plugins of Synthesis's listing (<c>RawLoadOrder</c>) in order, without the patch and without repeats. Synthesis
+/// already trims it at the patch's line, so the plugins below the patch are not in it.
 /// </param>
 public sealed record LoadOrderFacts(string DataFolder, IReadOnlyList<ModKey> EnabledPlugins, ModKey Patch);
 
@@ -16,7 +16,7 @@ public sealed record LoadOrderFacts(string DataFolder, IReadOnlyList<ModKey> Ena
 /// MO2 tells a launched program neither its instance nor its profile, so every possible pair is collected and checked against what
 /// Synthesis actually listed: the portable instance next to ModOrganizer.exe, the registry's current global instance and every global
 /// instance in %LOCALAPPDATA%\ModOrganizer for the same game, each with all its profiles. A pair is kept only when its plugins.txt
-/// has exactly Synthesis's enabled plugins active and each of them comes from an enabled mod of the profile or the game's Data folder.
+/// has exactly Synthesis's enabled plugins active above the patch's line and each of them comes from an enabled mod of the profile or the game's Data folder.
 /// The run goes on only when exactly one pair is kept (or several that are the same profile copied, with an identical modlist.txt).
 /// </para>
 /// </summary>
@@ -144,9 +144,10 @@ public static class Mo2Locator
 
     /// <summary>
     /// Why the profile does not match the load order, or null when it does: the profile's active plugins and Synthesis's enabled
-    /// plugins (its full listing, so also those below the patch's line) must be the same plugins in the same order. The patch is
-    /// left out on both sides, as are the base masters and the plugins no mod holds (the game's own, Creation Club), which
-    /// Synthesis adds or drops itself.
+    /// plugins must be the same plugins in the same order. Synthesis trims its load order at the patch's line, so only the profile's
+    /// plugins above the patch are compared (all of them when plugins.txt does not list the patch yet). The patch is left out on
+    /// both sides, as are the base masters and the plugins no mod holds (the game's own, Creation Club), which Synthesis adds or
+    /// drops itself.
     /// </summary>
     private static string? Mismatch(
         Mo2Instance instance, LoadOrderFacts facts, Dictionary<string, List<string>> holders, IFileSystem fileSystem, string dataFolder)

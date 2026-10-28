@@ -241,8 +241,9 @@ on; with merging off none is written, as the look mods stay in the modlist.
 ## MO2 instance and profile
 
 MO2 does not tell the patcher which instance and profile it runs in, so the patcher takes the only one whose active plugins are
-exactly those Synthesis listed (also the plugins below the patch), in the same order, each coming from an enabled mod or the game's
-Data folder. Copies of one profile with an identical mod list count as one.
+exactly those Synthesis listed, in the same order, each coming from an enabled mod or the game's Data folder. Synthesis hands the
+patcher only the plugins above the patch, so only the profile's plugins up to the patch's position in plugins.txt are compared; the
+plugins below it are ignored. When plugins.txt does not list the patch yet (a first run), all of them are compared. Copies of one profile with an identical mod list count as one.
 
 ## Settings
 

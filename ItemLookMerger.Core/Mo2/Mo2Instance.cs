@@ -123,9 +123,12 @@ public sealed class Mo2Instance
     /// <summary>The profile's plugins.txt lines in load order, active or not, or null without a plugins.txt.</summary>
     public IReadOnlyList<PluginEntry>? Plugins { get; }
 
-    /// <summary>The profile's active plugins in load order, without <paramref name="patch"/> (listed or not) and without repeats.</summary>
+    /// <summary>
+    /// The profile's active plugins in load order up to <paramref name="patch"/>'s first line (the part Synthesis hands a patcher), or
+    /// all of them when plugins.txt does not list the patch; without the patch itself and without repeats.
+    /// </summary>
     public IReadOnlyList<ModKey> ActivePlugins(ModKey patch) =>
-        (Plugins ?? []).Where(entry => entry.Active && entry.Plugin != patch).Select(entry => entry.Plugin).Distinct().ToList();
+        (Plugins ?? []).TakeWhile(entry => entry.Plugin != patch).Where(entry => entry.Active).Select(entry => entry.Plugin).Distinct().ToList();
 
     /// <summary>Whether <paramref name="plugin"/> is active in plugins.txt but below <paramref name="patch"/>'s line, so Synthesis leaves it out.</summary>
     public bool IsActiveAfter(ModKey plugin, ModKey patch) =>

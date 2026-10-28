@@ -25,10 +25,8 @@ public class PatchRunTests
     {
         if (fileSystem.Directory.Exists(Mo2Fixtures.PortableProfile))
             Mo2Fixtures.MatchPortableProfile(fileSystem, loadOrder.Select(mod => mod.ModKey), linesAfter);
-        var enabled = loadOrder.Select(mod => mod.ModKey)
-            .Concat(PluginsTxt.Entries(linesAfter).Where(entry => entry.Active && entry.Plugin != plugins.Patch.ModKey).Select(entry => entry.Plugin))
-            .Distinct()
-            .ToList();
+        // Synthesis trims its load order at the patch's line, so the plugins in linesAfter are not in it.
+        var enabled = loadOrder.Select(mod => mod.ModKey).Distinct().ToList();
         return new(loadOrder, enabled, plugins.Patch, Mo2Fixtures.PortableData, options,
             new FakeMo2Environment(Path.Combine(Mo2Fixtures.PortableFolder, "ModOrganizer.exe")), fileSystem, log);
     }

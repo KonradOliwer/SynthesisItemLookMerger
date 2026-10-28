@@ -40,7 +40,8 @@ public static class Program
             .Select(listing => listing.Mod)
             .WhereNotNull()
             .ToList();
-        // The full listing, not the trimmed LoadOrder: it also holds the plugins below the patch's line. The patch may be listed and appended.
+        // The raw listing keeps disabled plugins, which LoadOrder drops. Synthesis trims both at the patch's line, so neither holds the
+        // plugins below the patch. The patch may be listed and appended.
         var enabledPlugins = state.RawLoadOrder
             .Where(listing => listing.Enabled && listing.ModKey != state.PatchMod.ModKey)
             .Select(listing => listing.ModKey)
