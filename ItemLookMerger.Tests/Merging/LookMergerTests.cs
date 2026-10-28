@@ -242,7 +242,7 @@ public class LookMergerTests
         var result = MergeSelfContained(_plugins.LoadOrder(look), new LookSource(look, "Look Mod"));
 
         Assert.Single(result.Changes);
-        Assert.Contains(_log.Warnings, warning => warning.Contains(lookRace.ToString()) && warning.Contains("AdditionalRaces") && warning.Contains("cleared"));
+        Assert.Contains(_log.Warnings, warning => warning.Contains(lookRace.ToString()) && warning.Contains("AdditionalRaces") && warning.Contains("removed"));
         Assert.DoesNotContain(PatchFormKeysAndLinks(), formKey => formKey.ModKey == look.ModKey);
     }
 

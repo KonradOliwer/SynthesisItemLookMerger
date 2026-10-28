@@ -53,7 +53,8 @@ public static class Program
             settings.VerboseLogging,
             merging.AllowMerging,
             merging.ForwardFolderName,
-            settings.InCaseOfTypeDiscrepancy);
+            settings.InCaseOfTypeDiscrepancy,
+            merging.CopyAddedItems);
         try
         {
             PatchRun.Run(new RunInputs(

@@ -44,9 +44,14 @@ public static class PatchRun
 
         // Fails the run for an empty list or a plugin that isn't loaded, so there is always at least one source past this point.
         var sources = SourceResolver.Resolve(options.PluginsToForward, inputs.LoadOrder, inputs.Patch.ModKey, mo2, log);
+        // Without merging the look plugins stay, so copied items would be there twice.
+        if (options.CopyAddedItems && !options.AllowMerging)
+            log.Warning("CopyAddedItems needs Allow merging: the look plugins stay enabled without it, so the items would exist twice. The setting is ignored.");
+        var copyAddedItems = options.CopyAddedItems && options.AllowMerging;
         // With merging on, the patch is made independent of the look plugins, so they can be disabled after the run.
-        var result = LookMerger.Merge(inputs.LoadOrder, inputs.Patch, sources, options.ForwardNames, selfContained: options.AllowMerging, options.OnTypeDiscrepancy, log);
-        string Credits() => CreditsWriter.Build(result.Changes, plugin => CreditsWriter.Origin(mo2, sources, plugin));
+        var result = LookMerger.Merge(
+            inputs.LoadOrder, inputs.Patch, sources, options.ForwardNames, selfContained: options.AllowMerging, options.OnTypeDiscrepancy, log, copyAddedItems);
+        string Credits() => CreditsWriter.Build(result.Changes, plugin => CreditsWriter.Origin(mo2, sources, plugin), result.AddedItems);
 
         AssetCopyResult? assets = null;
         // With merging off the look mods stay in the modlist, so there are no credits to write.
@@ -54,48 +59,100 @@ public static class PatchRun
         if (forwardFolder != null)
         {
             // Assets and credits are written into a staging folder and swapped in at the end, so a failed copy keeps the previous output.
-            var staging = ForwardFolder.BeginStaging(fileSystem, forwardFolder, log);
+            var staging = fileSystem.Path.Combine(forwardFolder, ForwardFolder.StagingFolderName);
+            bool wasMissing = false, wasEmpty = false, hadOutput = false;
+            // A folder the patcher refuses (someone else's) is never rolled back: only what this run created or changed is.
+            var claimed = false;
+            var step = "checking the forward folder";
             try
             {
+                wasMissing = !fileSystem.Directory.Exists(forwardFolder);
+                wasEmpty = ForwardFolder.IsMissingOrEmpty(fileSystem, forwardFolder);
+                // A leftover staging folder of a killed first run is no output, though it makes the folder non-empty.
+                hadOutput = ForwardFolder.HasOutput(fileSystem, forwardFolder);
+                // A leftover previous folder fails the run in BeginStaging before any change, so there is nothing to roll back either.
+                claimed = !ForwardFolder.IsForeign(fileSystem, forwardFolder) && !ForwardFolder.HasLeftoverPrevious(fileSystem, forwardFolder);
+                step = "preparing the staging folder";
+                staging = ForwardFolder.BeginStaging(fileSystem, forwardFolder, log);
+                step = "copying the assets";
                 if (result.Assets.Count > 0)
                     assets = AssetCopier.Copy(result.Assets, mo2, forwardFolder, inputs.DataFolder, loadOrderKeys, fileSystem, log, targetFolder: staging, lookSources: sources);
+                step = "writing CREDITS.md";
                 fileSystem.File.WriteAllText(fileSystem.Path.Combine(staging, CreditsWriter.FileName), Credits());
+                step = "swapping the new output in";
+                // The commit point: it returns only once the new content is in place, and its cleanup afterwards never fails the run.
+                ForwardFolder.CommitStaging(fileSystem, forwardFolder, staging, log);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                ForwardFolder.DiscardStaging(fileSystem, staging, log);
+                var left = claimed ? ForwardFolder.Rollback(fileSystem, forwardFolder, staging, wasMissing, wasEmpty, log) : null;
+                var state = left switch
+                {
+                    null => $"Nothing in the forward folder {forwardFolder} was changed.",
+                    { Count: > 0 } => $"The forward folder {forwardFolder} is not as it was; left behind: {string.Join("; ", left)}."
+                        + (wasEmpty ? " There was no previous output before this run." : string.Empty),
+                    _ when wasMissing => $"There was no previous output: the forward folder {forwardFolder} did not exist and was removed again.",
+                    _ when wasEmpty => $"There was no previous output: the forward folder {forwardFolder} was empty and is empty again.",
+                    _ when !hadOutput => $"There was no previous output: the forward folder {forwardFolder} held none and holds none again.",
+                    _ => $"The forward folder {forwardFolder} keeps its previous output.",
+                };
                 throw new RunFailedException(
-                    $"Writing the assets or CREDITS.md failed ({ex.Message}); the forward folder {forwardFolder} keeps its previous output. "
-                    + "Close any program that has those files open, and check the free disk space, then run the patcher again.");
+                    $"The run failed while {step} ({ex.Message}); {state} "
+                    + "Close any program that has files of the forward folder or the look mods open, and check the free disk space, then run the patcher again.",
+                    ex);
             }
-            catch
+            catch (Exception ex)
             {
-                ForwardFolder.DiscardStaging(fileSystem, staging, log);
+                if (claimed)
+                    ForwardFolder.Rollback(
+                        fileSystem, forwardFolder, staging, wasMissing, wasEmpty, log, previousNotFromThisRun: ex is RunFailedException { PreviousNotFromThisRun: true });
                 throw;
             }
-            ForwardFolder.CommitStaging(fileSystem, forwardFolder, staging, log);
             creditsPath = fileSystem.Path.Combine(forwardFolder, CreditsWriter.FileName);
         }
 
-        PrintSummary(result, assets, sources, creditsPath, options.AllowMerging, log);
+        PrintSummary(result, assets, sources, creditsPath, options.AllowMerging, copyAddedItems, log);
         return result;
     }
 
     private static void PrintSummary(
-        MergeResult result, AssetCopyResult? assets, IReadOnlyList<LookSource> sources, string? creditsPath, bool selfContained, CountingLog log)
+        MergeResult result, AssetCopyResult? assets, IReadOnlyList<LookSource> sources, string? creditsPath, bool selfContained, bool copyAddedItems,
+        CountingLog log)
     {
         var (warnings, errors) = (log.Warnings, log.Errors);
         log.Info("--- Summary ---");
         foreach (var source in sources)
         {
+            // What the plugin supplied: the item looks it won, the added items whose copied version is its, the forms whose version is its.
             var perType = result.Changes
-                .Where(change => change.LookPlugins.Contains(source.ModKey))
+                .Where(change => change.LookSupplier == source.ModKey)
                 .GroupBy(change => change.Signature)
                 .Select(group => $"{group.Key} {group.Count()}")
                 .ToList();
-            log.Info($"{source.ModKey}: {(perType.Count == 0 ? "no item changed" : string.Join(", ", perType))}");
+            var perAddedType = result.AddedItems
+                .Where(item => (item.Supplier ?? item.Original.ModKey) == source.ModKey)
+                .GroupBy(item => item.Signature)
+                .Select(group => $"{group.Key} {group.Count()}")
+                .ToList();
+            var forms = result.Copies.Count(copy => copy.LookPlugin == source.ModKey);
+            var parts = new List<string>();
+            if (perType.Count > 0) parts.Add(string.Join(", ", perType));
+            if (perAddedType.Count > 0) parts.Add($"added items copied: {string.Join(", ", perAddedType)}");
+            if (forms > 0) parts.Add($"forms the looks depend on: {forms}");
+            log.Info($"{source.ModKey}: {(parts.Count == 0 ? "no item changed" : string.Join("; ", parts))}");
         }
         log.Info($"Items changed: {result.Changes.Count}. Skipped with identical looks: {result.IdenticalSkipped}.");
+        if (copyAddedItems)
+        {
+            var perAdded = result.AddedItems
+                .GroupBy(item => item.Signature)
+                .Select(group => $"{group.Key} {group.Count()}")
+                .ToList();
+            log.Info(
+                result.AddedItems.Count == 0
+                    ? "Added items copied into the patch: none."
+                    : $"Added items copied into the patch: {result.AddedItems.Count} ({string.Join(", ", perAdded)}).");
+        }
         var perCopiedType = result.Copies
             .GroupBy(copy => copy.Signature)
             .OrderBy(group => group.Key, StringComparer.Ordinal)

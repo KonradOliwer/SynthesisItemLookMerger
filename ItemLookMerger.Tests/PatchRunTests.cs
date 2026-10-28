@@ -109,6 +109,23 @@ public class PatchRunTests
     }
 
     [Fact]
+    public void Copy_added_items_with_merging_off_logs_a_warning_and_copies_nothing()
+    {
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+        look.Armors.AddNew("RelicOnlyArmor");
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        var log = new TestLog();
+        var options = new MergeOptions([look.ModKey], false, false, AllowMerging: false, ForwardFolderName, CopyAddedItems: true);
+
+        var result = PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, options, log));
+
+        Assert.Empty(result.AddedItems);
+        Assert.DoesNotContain(plugins.Patch.Armors, armor => armor.EditorID?.StartsWith("RelicOnlyArmor", StringComparison.Ordinal) == true);
+        Assert.Contains(log.Warnings, warning => warning.Contains("CopyAddedItems needs Allow merging"));
+    }
+
+    [Fact]
     public void A_listed_plugin_that_is_not_enabled_fails_the_run_before_any_change()
     {
         var plugins = new TestPlugins();
@@ -205,10 +222,300 @@ public class PatchRunTests
             Path.Combine(Mo2Fixtures.PortableMods, "Relics of Skyrim", @"Meshes\Armor\Relic\Relic_go.nif"),
             new MockFileData([5]) { AllowedFileShare = FileShare.None });
 
-        var ex = Assert.Throws<RunFailedException>(() => PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), new TestLog())));
+        var log = new TestLog();
+
+        var ex = Assert.Throws<RunFailedException>(() => PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), log)));
 
         Assert.Contains("keeps its previous output", ex.Message);
+        Assert.IsAssignableFrom<IOException>(ex.InnerException);
+        Assert.Contains(ex.InnerException!.Message, ex.Message, StringComparison.Ordinal);
         AssertForwardFolderUntouched(fileSystem);
+        Assert.Contains(log.Infos, line => line.StartsWith("Run failed; forward folder left unchanged", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_failed_first_run_leaves_no_forward_folder_behind()
+    {
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.Directory.Delete(Forward, recursive: true);
+        fileSystem.AddFile(
+            Path.Combine(Mo2Fixtures.PortableMods, "Relics of Skyrim", @"Meshes\Armor\Relic\Relic_go.nif"),
+            new MockFileData([5]) { AllowedFileShare = FileShare.None });
+
+        var ex = Assert.Throws<RunFailedException>(() => PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), new TestLog())));
+
+        Assert.False(fileSystem.Directory.Exists(Forward));
+        Assert.Contains("There was no previous output", ex.Message);
+        Assert.DoesNotContain("keeps its previous output", ex.Message);
+    }
+
+    [Fact]
+    public void A_staging_folder_left_by_a_crashed_run_is_removed_at_the_start_of_the_next_run()
+    {
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.AddFile(Path.Combine(Forward, ForwardFolder.StagingFolderName, "half.nif"), new MockFileData([9]));
+
+        PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), new TestLog()));
+
+        Assert.False(fileSystem.Directory.Exists(Path.Combine(Forward, ForwardFolder.StagingFolderName)));
+        Assert.False(fileSystem.File.Exists(Path.Combine(Forward, "half.nif")));
+        Assert.True(fileSystem.File.Exists(Path.Combine(Forward, @"Meshes\Armor\Relic\Relic_go.nif")));
+    }
+
+    private static string Previous => Path.Combine(Forward, ForwardFolder.PreviousFolderName);
+
+    private static void RunFaulty(MockFileSystem fileSystem, Action<FaultyFileSystem> fault, TestLog log, Action? whenDone = null)
+    {
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+        var faulty = new FaultyFileSystem(fileSystem);
+        fault(faulty);
+        var inputs = Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), log) with { FileSystem = faulty };
+        try
+        {
+            PatchRun.Run(inputs);
+        }
+        finally
+        {
+            whenDone?.Invoke();
+        }
+    }
+
+    private static bool IsStagedMeshes(string source) =>
+        source.Contains(ForwardFolder.StagingFolderName, StringComparison.Ordinal) && source.EndsWith("Meshes", StringComparison.Ordinal);
+
+    [Fact]
+    public void A_failed_swap_puts_the_previous_output_back()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        var log = new TestLog();
+        var movedIn = new List<string>();
+
+        // The staged entries are moved in sorted order, so CREDITS.md is in place when the move of Meshes fails and must be removed again.
+        var ex = Assert.Throws<RunFailedException>(() =>
+            RunFaulty(
+                fileSystem,
+                faulty => faulty.OnMove = (source, target) =>
+                {
+                    if (IsStagedMeshes(source)) return new IOException("locked");
+                    if (source.Contains(ForwardFolder.StagingFolderName, StringComparison.Ordinal)) movedIn.Add(Path.GetFileName(target));
+                    return null;
+                },
+                log));
+
+        Assert.Equal(["CREDITS.md"], movedIn);
+        Assert.Contains("could not be moved into the forward folder", ex.Message);
+        Assert.Contains("back as it was", ex.Message);
+        Assert.IsType<IOException>(ex.InnerException);
+        AssertForwardFolderUntouched(fileSystem);
+        Assert.False(fileSystem.Directory.Exists(Path.Combine(Forward, "Meshes")));
+        Assert.False(fileSystem.Directory.Exists(Previous));
+        Assert.Contains(log.Infos, line => line.StartsWith("Run failed; forward folder left unchanged", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_failed_credits_write_names_that_step_and_keeps_the_previous_output()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        var log = new TestLog();
+
+        var ex = Assert.Throws<RunFailedException>(() =>
+            RunFaulty(
+                fileSystem,
+                faulty => faulty.OnWriteAllText = path => path.EndsWith("CREDITS.md", StringComparison.Ordinal) ? new IOException("disk full") : null,
+                log));
+
+        Assert.Contains("writing CREDITS.md", ex.Message);
+        Assert.Contains("keeps its previous output", ex.Message);
+        AssertForwardFolderUntouched(fileSystem);
+        Assert.False(fileSystem.Directory.Exists(Path.Combine(Forward, ForwardFolder.StagingFolderName)));
+    }
+
+    [Fact]
+    public void A_failed_run_in_a_folder_holding_only_the_marker_does_not_claim_a_previous_output()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.Directory.Delete(Forward, recursive: true);
+        fileSystem.AddFile(Path.Combine(Forward, ForwardFolder.MarkerFileName), new MockFileData("marker"));
+        var log = new TestLog();
+
+        var ex = Assert.Throws<RunFailedException>(() =>
+            RunFaulty(
+                fileSystem,
+                faulty => faulty.OnWriteAllText = path => path.EndsWith("CREDITS.md", StringComparison.Ordinal) ? new IOException("disk full") : null,
+                log));
+
+        Assert.DoesNotContain("keeps its previous output", ex.Message);
+        Assert.Contains("There was no previous output", ex.Message);
+    }
+
+    [Fact]
+    public void A_non_io_exception_in_the_swap_puts_the_previous_output_back_too()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+
+        var ex = Assert.Throws<RunFailedException>(() =>
+            RunFaulty(fileSystem, faulty => faulty.OnMove = (source, _) => IsStagedMeshes(source) ? new NotSupportedException("odd path") : null, new TestLog()));
+
+        Assert.IsType<NotSupportedException>(ex.InnerException);
+        AssertForwardFolderUntouched(fileSystem);
+        Assert.False(fileSystem.Directory.Exists(Previous));
+    }
+
+    [Fact]
+    public void A_failed_restore_keeps_the_previous_folder_and_logs_an_error_naming_it()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.AddFile(Path.Combine(Forward, @"Meshes\Old\old.nif"), new MockFileData([7]));
+        var log = new TestLog();
+
+        var ex = Assert.Throws<RunFailedException>(() =>
+            RunFaulty(
+                fileSystem,
+                faulty =>
+                {
+                    faulty.OnMove = (source, _) => IsStagedMeshes(source) ? new IOException("staged move failed") : null;
+                    // The nested old file can no longer be moved once it has been moved aside.
+                    faulty.IsLocked = file => file.Contains(ForwardFolder.PreviousFolderName, StringComparison.Ordinal) && file.EndsWith("old.nif", StringComparison.Ordinal);
+                },
+                log));
+
+        Assert.Contains(Previous, ex.Message);
+        Assert.Equal("staged move failed", ex.InnerException?.Message);
+        Assert.True(fileSystem.File.Exists(Path.Combine(Previous, @"Meshes\Old\old.nif")));
+        Assert.Contains(log.Errors, error => error.Contains(Previous, StringComparison.Ordinal));
+        Assert.False(log.Infos.Any(line => line.StartsWith("Run failed; forward folder left unchanged", StringComparison.Ordinal)));
+        Assert.True(fileSystem.File.Exists(Path.Combine(Forward, ForwardFolder.MarkerFileName)));
+    }
+
+    [Fact]
+    public void A_failed_cleanup_after_the_swap_keeps_the_new_output_and_the_run_succeeds_with_a_warning()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.AddFile(Path.Combine(Forward, @"Meshes\Old\old.nif"), new MockFileData([7]));
+        var log = new TestLog();
+
+        RunFaulty(
+            fileSystem,
+            faulty => faulty.IsLocked = file => file.Contains(ForwardFolder.PreviousFolderName, StringComparison.Ordinal) && file.EndsWith("old.nif", StringComparison.Ordinal),
+            log);
+
+        Assert.True(fileSystem.File.Exists(Path.Combine(Forward, @"Meshes\Armor\Relic\Relic_go.nif")));
+        Assert.NotEqual("old credits", fileSystem.File.ReadAllText(Path.Combine(Forward, "CREDITS.md")));
+        Assert.False(fileSystem.File.Exists(Path.Combine(Forward, "earlier.nif")));
+        Assert.False(fileSystem.File.Exists(Path.Combine(Forward, @"Meshes\Old\old.nif")));
+        // The fault really kept the old file, and the warning names the folder holding it.
+        Assert.True(fileSystem.File.Exists(Path.Combine(Previous, @"Meshes\Old\old.nif")));
+        Assert.Contains(log.Warnings, warning => warning.Contains(Previous, StringComparison.Ordinal));
+        Assert.DoesNotContain(log.Infos, line => line.StartsWith("Run failed", StringComparison.Ordinal));
+        Assert.Empty(log.Errors);
+    }
+
+    [Fact]
+    public void A_leftover_previous_folder_fails_the_run_before_any_change_and_is_left_untouched()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.AddFile(Path.Combine(Previous, "older.nif"), new MockFileData([4]));
+        fileSystem.AddFile(Path.Combine(Forward, ForwardFolder.StagingFolderName, "half.nif"), new MockFileData([9]));
+        var log = new TestLog();
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+
+        var ex = Assert.Throws<RunFailedException>(() => PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), log)));
+
+        Assert.Contains(Previous, ex.Message, StringComparison.Ordinal);
+        Assert.Contains($"Delete {Previous} and run the patcher again", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("move the contents", ex.Message);
+        Assert.Equal([4], fileSystem.File.ReadAllBytes(Path.Combine(Previous, "older.nif")));
+        Assert.True(fileSystem.File.Exists(Path.Combine(Forward, ForwardFolder.StagingFolderName, "half.nif")));
+        Assert.True(fileSystem.File.Exists(Path.Combine(Forward, "earlier.nif")));
+        Assert.Equal("old credits", fileSystem.File.ReadAllText(Path.Combine(Forward, "CREDITS.md")));
+        Assert.DoesNotContain(log.Infos, line => line.Contains("left unchanged"));
+    }
+
+    [Fact]
+    public void A_previous_folder_that_appears_before_the_swap_is_reported_as_untouched()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        var log = new TestLog();
+
+        var ex = Assert.Throws<RunFailedException>(() =>
+            RunFaulty(
+                fileSystem,
+                faulty => faulty.OnWriteAllText = path =>
+                {
+                    // Someone creates the folder while the run is writing, just before the swap.
+                    if (path.EndsWith("CREDITS.md", StringComparison.Ordinal)) fileSystem.AddFile(Path.Combine(Previous, "stranger.txt"), new MockFileData("theirs"));
+                    return null;
+                },
+                log));
+
+        Assert.Contains("appeared while the run was writing its output", ex.Message);
+        Assert.Contains(log.Infos, line => line.StartsWith("Run failed; forward folder left unchanged", StringComparison.Ordinal));
+        Assert.DoesNotContain(log.Warnings, warning => warning.Contains("not as it was", StringComparison.Ordinal));
+        Assert.True(fileSystem.File.Exists(Path.Combine(Previous, "stranger.txt")));
+        AssertForwardFolderUntouched(fileSystem);
+        Assert.False(fileSystem.Directory.Exists(Path.Combine(Forward, ForwardFolder.StagingFolderName)));
+    }
+
+    [Fact]
+    public void A_failed_run_after_a_killed_first_run_does_not_claim_a_previous_output()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.Directory.Delete(Forward, recursive: true);
+        // A first run killed after staging: the marker and the staging folder, but no output.
+        fileSystem.AddFile(Path.Combine(Forward, ForwardFolder.MarkerFileName), new MockFileData("marker"));
+        fileSystem.AddFile(Path.Combine(Forward, ForwardFolder.StagingFolderName, "half.nif"), new MockFileData([9]));
+
+        var ex = Assert.Throws<RunFailedException>(() =>
+            RunFaulty(
+                fileSystem,
+                faulty => faulty.OnWriteAllText = path => path.EndsWith("CREDITS.md", StringComparison.Ordinal) ? new IOException("disk full") : null,
+                new TestLog()));
+
+        Assert.DoesNotContain("keeps its previous output", ex.Message);
+        Assert.Contains("There was no previous output", ex.Message);
+    }
+
+    [Fact]
+    public void A_failed_run_in_an_existing_empty_folder_leaves_it_empty_and_existing()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.Directory.Delete(Forward, recursive: true);
+        fileSystem.AddDirectory(Forward);
+        fileSystem.AddFile(
+            Path.Combine(Mo2Fixtures.PortableMods, "Relics of Skyrim", @"Meshes\Armor\Relic\Relic_go.nif"),
+            new MockFileData([5]) { AllowedFileShare = FileShare.None });
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+
+        Assert.Throws<RunFailedException>(() => PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), new TestLog())));
+
+        Assert.True(fileSystem.Directory.Exists(Forward));
+        Assert.Empty(fileSystem.Directory.EnumerateFileSystemEntries(Forward));
+    }
+
+    [Fact]
+    public void A_foreign_folder_is_never_touched_by_a_failed_run()
+    {
+        var fileSystem = WithRelicsAndForwardFolder(enabled: true);
+        fileSystem.Directory.Delete(Forward, recursive: true);
+        fileSystem.AddFile(Path.Combine(Forward, "someone_elses.esp"), new MockFileData([3]));
+        var theirStaging = Path.Combine(Forward, ForwardFolder.StagingFolderName, "theirs.txt");
+        fileSystem.AddFile(theirStaging, new MockFileData("theirs"));
+        var plugins = new TestPlugins();
+        var look = plugins.LookPlugin("Relics of Skyrim.esm", "Relic");
+
+        var ex = Assert.Throws<RunFailedException>(() => PatchRun.Run(Inputs(plugins, plugins.LoadOrder(look), fileSystem, Merging(look.ModKey), new TestLog())));
+
+        Assert.Contains("another mod", ex.Message);
+        Assert.True(fileSystem.File.Exists(Path.Combine(Forward, "someone_elses.esp")));
+        Assert.True(fileSystem.File.Exists(theirStaging));
+        Assert.False(fileSystem.File.Exists(Path.Combine(Forward, ForwardFolder.MarkerFileName)));
     }
 
     [Fact]

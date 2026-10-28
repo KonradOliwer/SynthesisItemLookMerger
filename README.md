@@ -116,9 +116,62 @@ The patch is self-contained: it needs none of the look plugins as a master, so *
 keep their looks (enable them again for the next run).
 
 - The forms the forwarded looks depend on are in the patch as new records (see above), including those the look plugins added.
+- At the end of the log, each look plugin states what the patch carries of it and what disabling it drops. What a plugin
+  **supplied** is counted: the item looks it won (the item's look fields in the patch are its version), with Copy added items the
+  added items whose copied version is its (the latest look plugin containing the item), and the forms the looks depend on whose
+  copied version is its; an added item also counts for the plugin that added it when another plugin's version was copied. A
+  plugin that supplied none of these is a warning (contributes nothing), unless it adds items (one of the item types, so a plugin
+  adding only recipes still gets the warning). Then it is an information line: with Copy added items off, that its added items are
+  not copied because the setting is off; with it on, that none of its added items could be copied (the errors say why).
 - Only these visual records are carried. A field outside the look that points at a look plugin's own record (a keyword, an
   enchantment, a script, ...) keeps the stats side's value instead, and the log names the item and field.
 - The look mods' meshes and textures are copied into the forward folder (see Assets).
+
+### Copy added items
+
+Off by default, and only with merging on (with merging off it is ignored and the log warns: the look plugins stay enabled, so the
+items would exist twice). It moves the items a look plugin **adds itself** (new records with no original item elsewhere: armor,
+weapons, ammunition and the other item types above) into the patch, so that you can disable that look mod.
+
+- Every such item is copied as a **new record with a new FormID** and the EditorID rule above (`_ILM`, plus the plugin and FormID
+  on a clash). Its armor addons, texture sets and the other forms its look depends on are copied the same way, and the links
+  are pointed at the copies, as are links to other copied added items (an armor's template armor, an enchanted item's template).
+  The log has one line per copied item with its original FormKey and EditorID and its new FormKey.
+- Where several look plugins contain the item (one adds it, another overrides it), the one later in the load order provides the
+  copy, and there is only one copy. The copy never takes the EditorID of the item it is made from: when that already ends in
+  `_ILM`, the plugin and FormID are added.
+- **Stats side:** when a non-look plugin overrides the item, or an earlier Synthesis patcher already put a version of it in the
+  patch, that version is the winner. The copy is the winner's version with the look plugin's visual fields, and the winner goes
+  through the same type discrepancy rules as an override (see Type discrepancies): a wide change, or the setting `SkipMerging`,
+  leaves the item uncopied with the usual log line. An earlier patcher's override of the look plugin's item is replaced by the copy,
+  since the patch must not need the look plugin; when the item is not copied (a type discrepancy, a required link below), that
+  override stays as it is, and since it still needs the look plugin as a master, the self-contained check then stops the run with a
+  message naming that record. In CREDITS.md the stats of such a copy are credited to "earlier patcher".
+- The meshes, textures and files named inside them are copied like all look assets (see Assets).
+- **Not copied:** everything that is not one of the item types, so recipes, leveled lists, quests, outfits, containers, head parts,
+  enchantments, perks and so on. The copied items can only be obtained by console or other means, not in the game world. The
+  log lists what disabling each look plugin drops.
+- **Saves:** items already in a save stay tied to the original plugin, since the copies have other FormIDs. They do not become the
+  copies, and disabling the look plugin breaks them in that save.
+- **Winning override:** when a non-look plugin overrides an added item (a balance patch, say), the copy is that plugin's version
+  with the look plugin's visual fields (the look fields above), and the log warns that the plugin still needs the look plugin as a
+  master, so the look plugin cannot be disabled while it is enabled. Its links into the look plugin that the patch cannot carry
+  are cleared (below).
+- **Links into the look plugin:** a link in a copied item (or a form it depends on) to a record the patch cannot carry (an
+  enchantment, keyword, race, magic effect, script property or head part the look plugin adds) never leaves an invalid record. Each
+  case has a warning that names the item and field:
+  - A link in a list (keywords, additional races, armor addons) is **removed** from the list. A potion's or ingredient's effect
+    whose base effect cannot be carried is removed as a whole. Removing entries from a copied form list shifts the indexes of the
+    entries after them, which matters to a script that reads the list by index.
+  - A cleared enchantment (ARMO, WEAP) also clears the enchantment amount.
+  - The race of an armor or armor addon falls back to the vanilla DefaultRace (Skyrim.esm 000019).
+  - A single link that is required (one Mutagen does not allow to be empty, such as an arrow's projectile) cannot be cleared: the
+    item is **not copied** and the log has an error naming the item and the link. The same for a potion or ingredient whose effects
+    all point at the look plugin.
+  - Any other single link is set to empty.
+
+  A link to a form the patch carries points at its copy. As with merging on, the run fails if any link to a look plugin is left in
+  the patch.
 
 ### Content merging off
 
@@ -150,7 +203,29 @@ with the meshes and textures the forwarded looks need, including the textures in
   that only another mod provides are not copied, and the log warns and says where they come from.
 - When two look mods have the same file, the one with the higher priority in MO2's left panel provides it.
 - The new content is written completely before it replaces the old, so a failed run keeps the previous output. The patcher only
-  manages a folder it created (marked by a hidden `.itemlookmerger` file).
+  manages a folder that holds its hidden `.itemlookmerger` marker file, or one that is empty (it then takes it over). Any other
+  folder is never touched: the run fails and says so.
+- A run that fails (the patcher reports an error) leaves the forward folder as it was (a folder it created, or found empty, is
+  removed or emptied again) and removes its own temporary folder (`.itemlookmerger-staging`), and Synthesis does not write the patch
+  plugin when the patcher fails, so the earlier patch stays too. The failure message names the step that failed and says whether there was a previous output. If
+  something could not be undone, the log and the message say what is left and where.
+- The swap moves the previous output to `.itemlookmerger-previous` first, then moves the new content in. If that fails, the new
+  entries are removed again and the previous output is put back, and `.itemlookmerger-previous` is deleted only after every entry is
+  back. If it cannot be put back, `.itemlookmerger-previous` is kept, an error names it and says to delete it and run the patcher
+  again (it may hold only part of the earlier output), and the run fails. Once the new content is in place the run counts as a success: if deleting `.itemlookmerger-previous` or the staging folder
+  then fails, the log only warns and names the leftover; the run is never rolled back or failed for that.
+- After a crash or a kill, nothing is repaired automatically. The next run refuses to start while `.itemlookmerger-previous` exists
+  (a file of that name counts too; also after a failed cleanup) and changes nothing. To continue, delete
+  `.itemlookmerger-previous` and run the patcher again, which rebuilds the whole forward folder from the look mods. Do not move
+  `.itemlookmerger-previous` back: it may hold only an incomplete copy of the earlier output (the swap or the cleanup was
+  interrupted half-way). Look through it only if you want to salvage a file. A leftover staging folder is never part of the
+  output; it is removed at the start of the first run that is not blocked by a leftover `.itemlookmerger-previous`.
+- The patcher owns the forward folder's content and replaces it on every run, except MO2's `meta.ini` (category, notes, version),
+  which is never moved, replaced or deleted. A folder holding only `meta.ini` (MO2's "create empty mod") counts as empty and is
+  taken over. Any other file you put there is replaced with the next run.
+- Staging adds the folder name `.itemlookmerger-staging` to every path while it is written, so a path that fits finally can fail
+  while being written; the run then fails and rolls back.
+- If Synthesis itself fails while writing the patch after a successful run, the forward folder is already updated.
 
 Enable the forward folder in MO2 and give it a high priority.
 
@@ -159,7 +234,8 @@ Enable the forward folder in MO2 and give it a high priority.
 One row per changed item: its EditorID, name and FormKey, the look plugins it takes its look from (the item's own and those of the
 forms its look depends on) and the plugin its stats come from, each with its MO2 mod. A weapon that took its type from a base item names that
 base item and the plugin its stats came from. Below that, each mod's Nexus link, version and download file as recorded in MO2;
-base-game plugins and mods without a `meta.ini` are listed by plugin name only. It is written to the forward folder with merging
+base-game plugins and mods without a `meta.ini` are listed by plugin name only. With Copy added items, a second table lists the copied
+added items: EditorID, name, original and new FormKey, the look plugins, and the plugin their stats come from. It is written to the forward folder with merging
 on; with merging off none is written, as the look mods stay in the modlist.
 
 ## MO2 instance and profile
@@ -177,6 +253,7 @@ Data folder. Copies of one profile with an identical mod list count as one.
 | **In case of type discrepancy** | `TakeVisualModWeaponType` | What to do when the look's weapon or armor type differs narrowly from the stats (see Type discrepancies): `TakeVisualModWeaponType` (weapons take the type stats of a generic base item, armor keeps the modlist type), `TakeModlistItemType` (the stats keep their type, the look is forwarded anyway) or `SkipMerging` (the item is not changed and the log names it). Wide changes are always skipped. |
 | **Verbose logging** | off | Log every item, field and asset decision. |
 | **Content merging → Allow merging** | on | Self-contained patch and asset copying, as described above. |
+| **Content merging → Copy added items** | off | Also move the items a look plugin adds itself into the patch as new records (see Copy added items). Needs Allow merging; ignored with a warning otherwise. |
 | **Content merging → Forward folder name** | `OUTPUT ItemLookMerger` | The MO2 mod folder (directly in the mods folder) that receives the assets and CREDITS.md (used only with merging on). Its content is replaced on every run, so use it for nothing else. |
 
 ## Log

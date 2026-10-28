@@ -12,21 +12,34 @@ internal sealed class ItemType
     private readonly Func<ISkyrimMod, IMajorRecordGetter, IMajorRecord> _getOrAddAsOverride;
     private readonly Func<ISkyrimMod, IMajorRecordGetter, IMajorRecord> _forwardWhole;
 
+    private readonly Func<ISkyrimMod, IGroup> _patchGroup;
+    private readonly Action<ISkyrimMod, FormKey> _removeFromPatch;
+
     private ItemType(
         string signature,
         Type getterType,
         Func<ISkyrimModGetter, IEnumerable<IMajorRecordGetter>> records,
         Func<ISkyrimModGetter, FormKey, IMajorRecordGetter?> find,
         Func<ISkyrimMod, IMajorRecordGetter, IMajorRecord> getOrAddAsOverride,
-        Func<ISkyrimMod, IMajorRecordGetter, IMajorRecord> forwardWhole)
+        Func<ISkyrimMod, IMajorRecordGetter, IMajorRecord> forwardWhole,
+        Func<ISkyrimMod, IGroup> patchGroup,
+        Action<ISkyrimMod, FormKey> removeFromPatch)
     {
+        _removeFromPatch = removeFromPatch;
         Signature = signature;
         GetterType = getterType;
         Records = records;
         _find = find;
         _getOrAddAsOverride = getOrAddAsOverride;
         _forwardWhole = forwardWhole;
+        _patchGroup = patchGroup;
     }
+
+    /// <summary>Adds a record that is new to the patch (its own FormKey, not an override) to the patch's group of this type.</summary>
+    public void AddToPatch(ISkyrimMod patch, IMajorRecord record) => _patchGroup(patch).AddUntyped(record);
+
+    /// <summary>Removes the record with this FormKey from the patch's group of this type, if it has one.</summary>
+    public void RemoveFromPatch(ISkyrimMod patch, FormKey formKey) => _removeFromPatch(patch, formKey);
 
     /// <summary>The record signature, e.g. "ARMO".</summary>
     public string Signature { get; }
@@ -76,5 +89,7 @@ internal sealed class ItemType
                 var target = patchGroup(patch);
                 target.Remove(source.FormKey);
                 return target.GetOrAddAsOverride<TMajor, TGetter>((TGetter)source);
-            });
+            },
+            patch => patchGroup(patch),
+            (patch, formKey) => patchGroup(patch).Remove(formKey));
 }

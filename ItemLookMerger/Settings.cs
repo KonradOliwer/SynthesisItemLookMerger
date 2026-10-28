@@ -67,4 +67,16 @@ public class ContentMergingSettings
         + "a folder this patcher did not create is never touched.\n"
         + "A plain folder name: not empty, not \".\" or \"..\", no \\ or /. Enable it in MO2 after the run.")]
     public string ForwardFolderName { get; set; } = "OUTPUT ItemLookMerger";
+
+    [SynthesisOrder]
+    [SynthesisSettingName("Copy added items")]
+    [SynthesisTooltip(
+        "Also moves the items a look plugin adds itself (armor, weapons, ammo, misc, books, ingredients, potions, soul gems, keys) into the\n"
+        + "patch as new records, with their armor addons, texture sets and meshes, so the look mod can be disabled after the run.\n"
+        + "Links into the look plugin that cannot be carried (enchantments, keywords, races, ...) are cleared or fall back; an item that\n"
+        + "would be broken by that is not copied.\n"
+        + "Recipes, leveled lists, quests, outfits, containers, head parts and other records are not copied: the items can only be\n"
+        + "obtained by console or other means. The copies get new FormIDs; copies already in a save stay tied to the original plugin.\n"
+        + "Only works with Allow merging on; otherwise it is ignored with a warning.")]
+    public bool CopyAddedItems { get; set; }
 }

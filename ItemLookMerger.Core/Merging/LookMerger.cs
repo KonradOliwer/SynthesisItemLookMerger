@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Reflection;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
@@ -19,7 +20,11 @@ namespace ItemLookMerger.Core.Merging;
 /// <param name="Base">The generic base weapon whose type-bound stats the item took, when the look gave it another weapon type.</param>
 public sealed record ChangedItem(
     string Signature, FormKey FormKey, string? EditorID, string? Name, IReadOnlyList<ModKey> LookPlugins, ModKey StatsPlugin,
-    IReadOnlyList<string> Fields, bool WholeRecord = false, BaseItem? Base = null);
+    IReadOnlyList<string> Fields, bool WholeRecord = false, BaseItem? Base = null)
+{
+    /// <summary>The look plugin whose version of the item's own look fields went into the patch; null when only dependency forms changed.</summary>
+    public ModKey? LookSupplier { get; init; }
+}
 
 /// <summary>The base item an item took its type-bound stats from, and the plugin those stats come from.</summary>
 public sealed record BaseItem(string? EditorID, FormKey FormKey, ModKey StatsPlugin);
@@ -31,6 +36,18 @@ public sealed record AssetNeed(string Path, string Item, LookSource Source);
 /// <param name="Original">The form it was made from: a look plugin's own record, or the shared record a look plugin overrides.</param>
 /// <param name="AddedByLook">A look plugin added the form (the copy is the look plugin's version); else the copy is the winner's version with the look's visual fields.</param>
 public sealed record CopiedForm(string Signature, FormKey Original, FormKey Copy, ModKey LookPlugin, bool AddedByLook);
+
+/// <summary>An item a look plugin added, copied into the patch as a new record (CopyAddedItems).</summary>
+/// <param name="Original">The item's FormKey in the look plugin that added it.</param>
+/// <param name="Copy">The new record's FormKey in the patch.</param>
+/// <param name="EditorID">The copy's EditorID.</param>
+/// <param name="LookPlugins">The look plugin that added the item first, then the one that supplied its version (when another), then those of the forms its look depends on.</param>
+/// <param name="Winner">The non-look plugin that overrides the item (the copy takes its stats); null when the look plugin's own version was copied.</param>
+/// <param name="Supplier">The look plugin whose version of the item was copied (the latest one that contains it); null counts as the adding plugin.</param>
+/// <param name="StatsFromPatch">True when the copy took its stats from an earlier patcher's version in the patch (the plugin of that patcher is not known).</param>
+public sealed record AddedItem(
+    string Signature, FormKey Original, FormKey Copy, string? EditorID, string? Name, IReadOnlyList<ModKey> LookPlugins, ModKey? Winner,
+    ModKey? Supplier = null, bool StatsFromPatch = false);
 
 /// <param name="DuplicatedRecords">Dependency forms a look plugin added, copied into the patch.</param>
 /// <param name="ForwardedLookRecords">Dependency forms a look plugin overrides (shared records), copied into the patch with the look's visual fields.</param>
@@ -44,6 +61,9 @@ public sealed record MergeResult(
 {
     /// <summary>Every dependency form copied into the patch.</summary>
     public IReadOnlyList<CopiedForm> Copies { get; init; } = [];
+
+    /// <summary>Every item a look plugin added that was copied into the patch (empty unless CopyAddedItems took effect).</summary>
+    public IReadOnlyList<AddedItem> AddedItems { get; init; } = [];
 }
 
 /// <summary>
@@ -65,10 +85,14 @@ internal static class LookMerger
     /// What to do when a look gives an item another weapon or armor type than its stats side has. A wider change (melee to bow, arrow
     /// to bolt, body armor to shield, another record type) leaves the item unchanged, with an error in the log, whatever this says.
     /// </param>
+    /// <param name="copyAddedItems">
+    /// Also copy the items the look plugins add themselves into the patch as new records. Only with <paramref name="selfContained"/>;
+    /// ignored otherwise (the look plugin stays, so the items would be there twice).
+    /// </param>
     public static MergeResult Merge(
         IReadOnlyList<ISkyrimModGetter> loadOrder, ISkyrimMod patch, IReadOnlyList<LookSource> sources, bool forwardNames, bool selfContained,
-        TypeDiscrepancyHandling onDiscrepancy, ILog log) =>
-        new Run(loadOrder, patch, sources, forwardNames, selfContained, onDiscrepancy, log).Execute();
+        TypeDiscrepancyHandling onDiscrepancy, ILog log, bool copyAddedItems = false) =>
+        new Run(loadOrder, patch, sources, forwardNames, selfContained, onDiscrepancy, log, copyAddedItems && selfContained).Execute();
 
     private sealed record Pick(LookSource Source, IMajorRecordGetter Record);
 
@@ -121,6 +145,10 @@ internal static class LookMerger
         private readonly bool _selfContained;
         private readonly TypeDiscrepancyHandling _onDiscrepancy;
         private readonly ILog _log;
+        private readonly bool _copyAddedItems;
+        private readonly List<AddedItem> _addedItems = [];
+        private readonly HashSet<FormKey> _addedCopied = [];
+        private readonly Dictionary<ModKey, int> _overridesWon = [];
         private readonly HashSet<ModKey> _sourceKeys;
         private readonly Dictionary<ModKey, ISkyrimModGetter> _loaded;
         private readonly IReadOnlyList<LookSource> _weakestFirst;
@@ -145,8 +173,9 @@ internal static class LookMerger
 
         public Run(
             IReadOnlyList<ISkyrimModGetter> loadOrder, ISkyrimMod patch, IReadOnlyList<LookSource> sources, bool forwardNames, bool selfContained,
-            TypeDiscrepancyHandling onDiscrepancy, ILog log)
+            TypeDiscrepancyHandling onDiscrepancy, ILog log, bool copyAddedItems)
         {
+            _copyAddedItems = copyAddedItems;
             _loadOrder = loadOrder;
             _patch = patch;
             _sources = sources;
@@ -181,6 +210,10 @@ internal static class LookMerger
                     if (wasIdentical) identical++;
                 }
             }
+            if (_copyAddedItems)
+            {
+                foreach (var type in ItemType.All) CopyAddedItems(type);
+            }
             if (_unresolved.Count > 0)
                 throw new RunFailedException(
                     "These look plugins override records the load order does not have (a missing master or record):\n  "
@@ -198,7 +231,128 @@ internal static class LookMerger
                 changes, identical, copies.Count(copy => copy.AddedByLook), copies.Count(copy => !copy.AddedByLook), _assets, _typeSkipped, _armorTypeKept)
             {
                 Copies = copies,
+                AddedItems = _addedItems,
             };
+        }
+
+        /// <summary>
+        /// CopyAddedItems: every item of this type a look plugin added (its FormKey belongs to a look plugin) goes into the patch as a
+        /// new record, like the forms its look depends on. The copy is the latest look plugin's version of the item; when a non-look
+        /// plugin overrides the item, the winner's version with the look's visual fields instead (the stats stay the winner's). Links
+        /// to other copied added items are pointed at their copies and the dependency walk copies the item's visual forms.
+        /// </summary>
+        private void CopyAddedItems(ItemType type)
+        {
+            var added = new Dictionary<FormKey, (LookSource Source, IMajorRecordGetter Record)>();
+            foreach (var source in _weakestFirst)
+            {
+                foreach (var record in type.Records(source.Mod))
+                {
+                    if (record.FormKey.ModKey != source.ModKey) continue;
+                    // Only the adding plugin's own record is stored; a later look plugin's override of it is skipped by the check
+                    // above and found per item below, as the version of the latest look plugin that contains the item.
+                    added[record.FormKey] = (source, record);
+                }
+            }
+            foreach (var (formKey, (origin, first)) in added)
+            {
+                var pick = _strongestFirst
+                    .Select(source => type.Find(source.Mod, formKey) is { } found ? new Pick(source, found) : null)
+                    .First(candidate => candidate != null)!;
+                var label = $"{type.Signature} {Label(first)}";
+
+                // The stats side: a non-look plugin that overrides the item, or an earlier patcher's version already in the patch.
+                var stats = StatsSideOf(formKey, (mod, key) => type.Find(mod, key));
+                var loadOrderWinner = stats != null && stats.Plugin != formKey.ModKey;
+                var winner = stats == null || !(loadOrderWinner || stats.InPatch) ? null : loadOrderWinner ? stats : stats with { Plugin = _patch.ModKey };
+
+                BaseWeapon? baseItem = null;
+                if (winner != null
+                    && LookFields.Differences(winner.Version, pick.Record, _forwardNames).Any(field => field != "Name")
+                    && TypeDiscrepancies.Find(winner.Version, pick.Record) is { } discrepancy
+                    && !Accept(label, winner, pick, discrepancy, out baseItem))
+                    continue;
+
+                IMajorRecord copy;
+                if (winner != null)
+                {
+                    copy = NewCopy(type.AddToPatch, winner.Version, winner.Version.EditorID, formKey, first.EditorID);
+                    if (baseItem != null) EnsureWeaponBases().Apply((IWeapon)copy, baseItem.Version);
+                    LookFields.Copy(copy, pick.Record, _forwardNames);
+                }
+                else
+                {
+                    copy = NewCopy(type.AddToPatch, pick.Record, pick.Record.EditorID, formKey, first.EditorID);
+                }
+                if (UncarriedRequiredLink(copy, label) is { } required)
+                {
+                    // The copy is made before the check (the link can only be read from a record with the look on it), so it is taken out
+                    // again with its EditorID and patch FormKey; the allocator may keep the FormKey for that EditorID, but the patch holds
+                    // no record of it. An earlier patcher's override of the item is left as it is.
+                    ReleaseCopy(type, copy);
+                    _log.Error($"{label}: its {required} points at a form of a look plugin that the patch cannot carry and cannot be left empty; the item is not copied.");
+                    continue;
+                }
+                if (winner is { InPatch: true })
+                {
+                    // The patch's override of the look plugin's item would need that plugin as a master; the copy replaces it.
+                    type.RemoveFromPatch(_patch, formKey);
+                    _log.Info($"{label}: an earlier patcher's version in the patch is the stats side; the copy replaces that override.");
+                }
+                if (winner != null)
+                {
+                    AddAssets(LookFields.ListedAssetLinks(pick.Record), pick.Source, label);
+                    if (loadOrderWinner)
+                        _log.Warning(
+                            $"{label}: added by {origin.ModKey} and overridden by {winner.Plugin}; the copy takes the stats of {winner.Plugin} and the look of "
+                            + $"{pick.Source.ModKey}, but {winner.Plugin} still needs {origin.ModKey} as a master, so it must stay enabled.");
+                }
+                else
+                {
+                    AddAssets(pick.Record.EnumerateAssetLinks(AssetLinkQuery.Listed), pick.Source, label);
+                }
+                _copyMap[formKey] = copy.FormKey;
+                _addedCopied.Add(formKey);
+                _itemTargets.Add(copy);
+                // No stats side to fall back on: a link into a look plugin that is not carried is cleared (or falls back).
+                _written.Add(new Written(copy, null, $"{label} (copied from {origin.ModKey})"));
+
+                var start = LookFields.FormLinks(pick.Record).Concat(LookFields.DependencyLinks(copy));
+                var lookPlugins = new[] { origin.ModKey, pick.Source.ModKey }
+                    .Concat(Walk(start, label).Where(node => node.CopyKey != null).Select(node => node.Source.ModKey))
+                    .Distinct()
+                    .ToList();
+                _addedItems.Add(new AddedItem(
+                    type.Signature, formKey, copy.FormKey, copy.EditorID, LookFields.NameOf(copy)?.String, lookPlugins,
+                    loadOrderWinner ? winner!.Plugin : (ModKey?)null, pick.Source.ModKey, winner is { InPatch: true }));
+                _log.Info($"{origin.ModKey}: added {label} copied as {copy.FormKey}.");
+            }
+        }
+
+        /// <summary>
+        /// The name of a required link of the item (one the record cannot be without) that points at a look plugin's form the patch
+        /// cannot carry, or "Effects" for a potion or ingredient whose effects all point at one; null when there is none. Such an item is not copied.
+        /// A required link is a single link whose Mutagen type is not nullable (an arrow's projectile).
+        /// </summary>
+        private string? UncarriedRequiredLink(IMajorRecordGetter record, string label)
+        {
+            foreach (var property in record.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (property.GetIndexParameters().Length > 0 || !typeof(IFormLinkGetter).IsAssignableFrom(property.PropertyType)) continue;
+                if (property.PropertyType.Name.Contains("Nullable", StringComparison.Ordinal)) continue;
+                if (property.GetValue(record) is IFormLinkGetter { IsNull: false } link && _sourceKeys.Contains(link.FormKey.ModKey)
+                    && NodeFor(link, label) is not { Type: not null })
+                    return property.Name;
+            }
+            var effects = record switch
+            {
+                IIngestibleGetter potion => potion.Effects,
+                IIngredientGetter ingredient => ingredient.Effects,
+                _ => null,
+            };
+            return effects is { Count: > 0 } && effects.All(effect => effect.BaseEffect.FormKeyNullable is { } key && _sourceKeys.Contains(key.ModKey))
+                ? "Effects"
+                : null;
         }
 
         private ChangedItem? HandleItem(ItemType type, FormKey formKey, Pick pick, out bool wasIdentical)
@@ -274,10 +428,14 @@ internal static class LookMerger
             _log.Verbose(
                 $"{label}: look from {string.Join(", ", lookPlugins)}, stats from {stats.Plugin} ({string.Join(", ", fields)})"
                 + (whole && itemDifferences.Count > 0 ? "; no stats override, the whole record is forwarded." : "."));
+            if (itemDifferences.Count > 0) _overridesWon[pick.Source.ModKey] = _overridesWon.GetValueOrDefault(pick.Source.ModKey) + 1;
             return new ChangedItem(
                 type.Signature, formKey, target.EditorID, LookFields.NameOf(target)?.String, lookPlugins, stats.Plugin, fields,
                 whole && itemDifferences.Count > 0,
-                baseItem == null ? null : new BaseItem(baseItem.Version.EditorID, baseItem.Version.FormKey, baseItem.StatsPlugin));
+                baseItem == null ? null : new BaseItem(baseItem.Version.EditorID, baseItem.Version.FormKey, baseItem.StatsPlugin))
+            {
+                LookSupplier = itemDifferences.Count > 0 ? pick.Source.ModKey : (ModKey?)null,
+            };
         }
 
         private static IEnumerable<IFormLinkGetter> ItemLinks(IMajorRecordGetter item) =>
@@ -451,7 +609,7 @@ internal static class LookMerger
             IMajorRecord copy;
             if (node.Added)
             {
-                copy = NewCopy(type, node.Version, node.Version.EditorID, node.Key);
+                copy = NewCopy(type.AddToPatch, node.Version, node.Version.EditorID, node.Key);
                 if (_selfContained) _written.Add(new Written(copy, null, $"{label} (copied from {node.Source.ModKey})"));
                 AddAssets(LookRecordType.AssetLinks(node.Version), node.Source, item);
                 _log.Verbose($"{item}: {label} is added by {node.Source.ModKey}; copied as {copy.FormKey}.");
@@ -460,7 +618,7 @@ internal static class LookMerger
             {
                 var stats = node.Stats!;
                 var fallback = Snapshot(stats.Version);
-                copy = NewCopy(type, stats.Version, stats.Version.EditorID, node.Key);
+                copy = NewCopy(type.AddToPatch, stats.Version, stats.Version.EditorID, node.Key);
                 if (node.Differences.Count > 0)
                 {
                     type.Copy(copy, node.Version);
@@ -501,14 +659,19 @@ internal static class LookMerger
         /// that is taken (two forms with the same EditorID), the source's plugin and FormID are added, so the name is the same on every
         /// run. A persistent allocator hands out one FormKey per EditorID, so no EditorID is asked for twice.
         /// </summary>
-        private IMajorRecord NewCopy(LookRecordType type, IMajorRecordGetter source, string? editorID, FormKey original)
+        private IMajorRecord NewCopy(Action<ISkyrimMod, IMajorRecord> addToPatch, IMajorRecordGetter source, string? editorID, FormKey original, string? originalEditorID = null)
         {
             string? name = null;
             if (!string.IsNullOrEmpty(editorID))
             {
                 var baseName = editorID.EndsWith(CopySuffix, StringComparison.Ordinal) ? editorID : editorID + CopySuffix;
                 name = baseName;
-                if (!_editorIDs.Add(name))
+                // The name is also taken when it is the source's own or the original's (its EditorID already ends in the suffix, or the
+                // winner's differs from the original's): the original stays enabled and a copy never shares its EditorID.
+                // When the name turns out to be the source's or the original's, it stays reserved on purpose: that EditorID belongs to an
+                // existing record, so no later copy may take it either.
+                var taken = !_editorIDs.Add(name);
+                if (taken || string.Equals(name, editorID, StringComparison.Ordinal) || string.Equals(name, originalEditorID, StringComparison.Ordinal))
                 {
                     var origin = new string($"{original.ModKey.Name}_{original.ID:X6}".Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
                     name = $"{baseName}_{origin}";
@@ -519,8 +682,16 @@ internal static class LookMerger
             while (!_patchKeys.Add(formKey)) formKey = _patch.GetNextFormKey();
             var copy = (IMajorRecord)source.Duplicate(formKey);
             copy.EditorID = name;
-            type.AddToPatch(_patch, copy);
+            addToPatch(_patch, copy);
             return copy;
+        }
+
+        /// <summary>Takes a copy made by <see cref="NewCopy"/> out of the patch again and frees its EditorID and FormKey for the next copy.</summary>
+        private void ReleaseCopy(ItemType type, IMajorRecord copy)
+        {
+            type.RemoveFromPatch(_patch, copy.FormKey);
+            _patchKeys.Remove(copy.FormKey);
+            if (copy.EditorID != null) _editorIDs.Remove(copy.EditorID);
         }
 
         /// <summary>
@@ -591,7 +762,8 @@ internal static class LookMerger
 
         /// <summary>
         /// Step 2: per FormKey, the record of the strongest source that overrides it. Records a source adds itself are left out;
-        /// they only come into the patch through a forwarded look that uses them.
+        /// they only come into the patch through a forwarded look that uses them, or as added items (CopyAddedItems), which also
+        /// takes the overrides of them by another look plugin.
         /// </summary>
         private Dictionary<FormKey, Pick> PickOverrides(Func<ISkyrimModGetter, IEnumerable<IMajorRecordGetter>> records)
         {
@@ -600,7 +772,8 @@ internal static class LookMerger
             {
                 foreach (var record in records(source.Mod))
                 {
-                    if (record.FormKey.ModKey != source.ModKey) picked[record.FormKey] = new Pick(source, record);
+                    if (record.FormKey.ModKey == source.ModKey || (_copyAddedItems && _sourceKeys.Contains(record.FormKey.ModKey))) continue;
+                    picked[record.FormKey] = new Pick(source, record);
                 }
             }
             return picked;
@@ -671,9 +844,11 @@ internal static class LookMerger
                     }
                     else
                     {
+                        var lookKeys = lookLinks.ToHashSet();
                         cleared.UnionWith(lookLinks);
                         _log.Warning(
-                            $"{entry.Label}: its {property.Name} points at {targets}, which is not a form the patch can carry; the link is cleared.");
+                            $"{entry.Label}: its {property.Name} points at {targets}, which is not a form the patch can carry; "
+                            + $"{ClearLinks(entry.Target, property, lookKeys)}.");
                     }
                 }
                 if (cleared.Count > 0) entry.Target.RemapLinks(cleared.ToDictionary(formKey => formKey, _ => FormKey.Null));
@@ -694,7 +869,54 @@ internal static class LookMerger
                     + (leftovers.Count > 10 ? $" (and {leftovers.Count - 10} more)" : "")
                     + ". Turn content merging off to keep the look plugins as masters.");
 
-            foreach (var source in _sources) ReportUncarriedContent(source);
+            foreach (var source in _sources) ReportCarriedContent(source);
+        }
+
+        /// <summary>The vanilla DefaultRace (Skyrim.esm 000019), which an armor or armor addon falls back to when its race cannot be carried.</summary>
+        private static readonly FormKey DefaultRace = new(ModKey.FromFileName("Skyrim.esm"), 0x000019);
+
+        /// <summary>
+        /// Clears the links of a property of a copied look-added record that point at <paramref name="cleared"/>, so the record stays valid:
+        /// list entries are removed (keywords, races, armor addons; a potion's or ingredient's whole effect when its base effect is
+        /// cleared), a cleared enchantment also clears the enchantment amount, a race falls back to the DefaultRace, and any other
+        /// single link is set to null. Returns what happened, for the warning.
+        /// </summary>
+        private static string ClearLinks(IMajorRecord target, PropertyInfo property, IReadOnlySet<FormKey> cleared)
+        {
+            if (property.GetValue(target) is IList list)
+            {
+                var removed = 0;
+                for (var i = list.Count - 1; i >= 0; i--)
+                {
+                    var drop = list[i] switch
+                    {
+                        IFormLinkGetter link => link.FormKeyNullable is { } key && cleared.Contains(key),
+                        IEffectGetter effect => effect.BaseEffect.FormKeyNullable is { } baseEffect && cleared.Contains(baseEffect),
+                        _ => false,
+                    };
+                    if (!drop) continue;
+                    list.RemoveAt(i);
+                    removed++;
+                }
+                if (removed > 0) return removed == 1 ? "the entry is removed" : $"the {removed} entries are removed";
+                return "the link is cleared";
+            }
+            switch (property.Name, target)
+            {
+                case ("Race", IArmor armor):
+                    armor.Race.SetTo(DefaultRace);
+                    return "the race falls back to the vanilla DefaultRace (Skyrim.esm 000019)";
+                case ("Race", IArmorAddon addon):
+                    addon.Race.SetTo(DefaultRace);
+                    return "the race falls back to the vanilla DefaultRace (Skyrim.esm 000019)";
+                case ("ObjectEffect", IArmor armor):
+                    armor.EnchantmentAmount = null;
+                    return "the link and the enchantment amount are cleared";
+                case ("ObjectEffect", IWeapon weapon):
+                    weapon.EnchantmentAmount = null;
+                    return "the link and the enchantment amount are cleared";
+            }
+            return "the link is cleared";
         }
 
         /// <summary>
@@ -738,17 +960,59 @@ internal static class LookMerger
                 + "the stats side's whole value is kept, so the look in it is dropped too.");
         }
 
-        /// <summary>The records of a look plugin the patch doesn't carry, which are lost when that plugin is disabled.</summary>
-        private void ReportUncarriedContent(LookSource source)
+        /// <summary>
+        /// What the patch carries of a look plugin (the looks of the items it overrides, the items it added when they are copied) and
+        /// the records it doesn't carry, which are lost when that plugin is disabled. A plugin that contributes nothing gets a warning.
+        /// </summary>
+        private void ReportCarriedContent(LookSource source)
         {
+            bool IsCarriedItem(IMajorRecordGetter record) =>
+                ItemType.IsItem(record)
+                && (record.FormKey.ModKey != source.ModKey && !_sourceKeys.Contains(record.FormKey.ModKey) || _addedCopied.Contains(record.FormKey));
             var lost = source.Mod.EnumerateMajorRecords()
-                .Where(record => !ItemType.IsItem(record) && !(_nodes.GetValueOrDefault(record.FormKey) is { Type: not null }))
+                .Where(record => !IsCarriedItem(record) && !(_nodes.GetValueOrDefault(record.FormKey) is { Type: not null }))
                 .GroupBy(RecordTypeName)
                 .OrderBy(group => group.Key, StringComparer.Ordinal)
                 .Select(group => $"{group.Count()} {group.Key}")
                 .ToList();
-            if (lost.Count > 0)
-                _log.Info($"{source.ModKey}: the patch carries its item looks only. Disabling it also drops its other content: {string.Join(", ", lost)}.");
+            var dropped = lost.Count > 0 ? $" Disabling it also drops its other content: {string.Join(", ", lost)}." : "";
+
+            // What the plugin supplied: the item looks it won, the added items whose copied version is its, the forms whose version is its.
+            var overridden = _overridesWon.GetValueOrDefault(source.ModKey);
+            // An added item counts for the plugin that added it as well as for the one whose version was copied.
+            var added = _addedItems.Count(item => item.Original.ModKey == source.ModKey || (item.Supplier ?? item.Original.ModKey) == source.ModKey);
+            var copiedForms = _copies.Count(copy => copy.Node.Source.ModKey == source.ModKey);
+            var carried = new List<string>();
+            if (overridden > 0) carried.Add($"the looks of {overridden} overridden item(s)");
+            if (added > 0) carried.Add($"{added} added item(s) it copied");
+            if (copiedForms > 0) carried.Add($"{copiedForms} form(s) the looks depend on");
+            if (carried.Count > 0)
+            {
+                _log.Info($"{source.ModKey}: the patch carries {string.Join(" and ", carried)}.{dropped}");
+                return;
+            }
+
+            var ownItems = ItemType.All.Sum(type => type.Records(source.Mod).Count(record => record.FormKey.ModKey == source.ModKey));
+            if (ownItems > 0)
+            {
+                // Plain information: with the setting off its added items are not part of what the patch does.
+                _log.Info(
+                    _copyAddedItems
+                        ? $"{source.ModKey}: the patch carries nothing of it: none of its {ownItems} added item(s) could be copied (see the errors).{dropped}"
+                        : $"{source.ModKey}: the patch carries its item looks only; its {ownItems} added item(s) are not copied because CopyAddedItems is off.{dropped}");
+                return;
+            }
+
+            var overrides = ItemType.All.Sum(type => type.Records(source.Mod).Count(record => record.FormKey.ModKey != source.ModKey));
+            // An override of an item another look plugin added counts as carried above only when that item was copied; say so when it wasn't.
+            var ofNotCopied = ItemType.All.Sum(type => type.Records(source.Mod)
+                .Count(record => record.FormKey.ModKey != source.ModKey && _sourceKeys.Contains(record.FormKey.ModKey) && !_addedCopied.Contains(record.FormKey)));
+            var why = overrides == 0
+                ? "it overrides no items and adds none"
+                : ofNotCopied == overrides
+                    ? $"it overrides only items that another look plugin added and the patch did not copy ({overrides})"
+                    : $"none of the {overrides} items it overrides has a look the patch needs";
+            _log.Warning($"{source.ModKey}: contributes nothing: {why}.{dropped}");
         }
     }
 

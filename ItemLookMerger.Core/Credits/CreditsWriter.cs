@@ -17,10 +17,12 @@ internal static class CreditsWriter
 {
     public const string FileName = "CREDITS.md";
 
-    public static string Build(IReadOnlyList<ChangedItem> changes, Func<ModKey, PluginOrigin> originOf)
+    public static string Build(IReadOnlyList<ChangedItem> changes, Func<ModKey, PluginOrigin> originOf, IReadOnlyList<AddedItem>? addedItems = null)
     {
+        addedItems ??= [];
         var origins = changes
             .SelectMany(change => change.LookPlugins.Append(change.StatsPlugin).Concat(change.Base is { } baseItem ? new[] { baseItem.StatsPlugin } : Array.Empty<ModKey>()))
+            .Concat(addedItems.SelectMany(item => item.Winner is { } winner ? item.LookPlugins.Append(winner) : item.LookPlugins))
             .Distinct()
             .ToDictionary(plugin => plugin, originOf);
 
@@ -37,6 +39,22 @@ internal static class CreditsWriter
         {
             text.AppendLine(
                 $"| {Cell(change.EditorID)} | {Cell(change.Name)} | `{change.FormKey}` | {string.Join(", ", change.LookPlugins.Select(plugin => Side(origins[plugin])))} | {StatsCell(change, origins)} |");
+        }
+
+        if (addedItems.Count > 0)
+        {
+            text.AppendLine();
+            text.AppendLine("## Added items");
+            text.AppendLine();
+            text.AppendLine("These items are added by a look plugin and copied into the patch as new records (new FormKeys). Their stats come from the look plugin, or from the plugin that overrides them.");
+            text.AppendLine();
+            text.AppendLine("| EditorID | Name | Original FormKey | New FormKey | Look | Stats |");
+            text.AppendLine("|---|---|---|---|---|---|");
+            foreach (var item in addedItems)
+            {
+                text.AppendLine(
+                    $"| {Cell(item.EditorID)} | {Cell(item.Name)} | `{item.Original}` | `{item.Copy}` | {string.Join(", ", item.LookPlugins.Select(plugin => Side(origins[plugin])))} | {(item.StatsFromPatch ? "earlier patcher" : item.Winner is { } winner ? Side(origins[winner]) : "look plugin")} |");
+            }
         }
 
         var withDetails = origins.Values
