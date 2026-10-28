@@ -413,6 +413,149 @@ public class TypeDiscrepancyTests
     }
 
     [Fact]
+    public void A_look_whose_animation_contradicts_its_weapon_type_keyword_is_an_error_and_the_item_is_skipped()
+    {
+        var (battleaxe, nordic) = (_skyrim.Keywords.AddNew("WeapTypeBattleaxe"), _skyrim.Keywords.AddNew("DLC2WeaponMaterialNordic"));
+        var stormfang = WithStatsOverride(NewWeapon(
+            _skyrim, "Stormfang", WeaponAnimationType.TwoHandSword, 1f, 1f, 20, 10f, _bothHands, _swingGreat, _greatsword, nordic));
+        LookOverride(stormfang, WeaponAnimationType.TwoHandAxe, _greatsword, _steel);
+        NewWeapon(_skyrim, "NordicBattleaxe", WeaponAnimationType.TwoHandAxe, 1f, 1f, 32, 20f, _bothHands, _swingGreat, battleaxe, nordic);
+
+        var result = Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Empty(_patch.Weapons);
+        Assert.Empty(result.Changes);
+        Assert.Equal(1, result.TypeSkipped);
+        var error = Assert.Single(_log.Errors);
+        Assert.Contains("Stormfang", error);
+        Assert.Contains(stormfang.FormKey.ToString(), error);
+        Assert.Contains("Look.esp", error);
+        Assert.Contains("TwoHandAxe", error);
+        Assert.Contains("WeapTypeGreatsword", error);
+        Assert.Contains("keeps the modlist winner's version", error);
+        Assert.Empty(_log.Warnings);
+    }
+
+    [Fact]
+    public void A_two_hand_axe_look_with_a_warhammer_keyword_is_consistent_and_gets_a_base()
+    {
+        var (hammer, nordic) = (_skyrim.Keywords.AddNew("WeapTypeWarhammer"), _skyrim.Keywords.AddNew("DLC2WeaponMaterialNordic"));
+        var blade = WithStatsOverride(NewWeapon(_skyrim, "NordicBlade", WeaponAnimationType.OneHandSword, 1f, 1f, 12, 6f, _rightHand, _swingSword, _sword, nordic));
+        LookOverride(blade, WeaponAnimationType.TwoHandAxe, hammer);
+        NewWeapon(_skyrim, "NordicWarhammer", WeaponAnimationType.TwoHandAxe, 1f, 1f, 35, 20f, _bothHands, _swingGreat, hammer, nordic);
+
+        var result = Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Empty(_log.Errors);
+        Assert.Equal("NordicWarhammer", result.Changes.Single().Base!.EditorID);
+    }
+
+    [Fact]
+    public void A_look_without_a_weapon_type_keyword_is_not_flagged_as_inconsistent()
+    {
+        LookOverride(_unique, WeaponAnimationType.TwoHandSword, _iron);
+
+        Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Empty(_log.Errors);
+        Assert.Contains("no generic base weapon", Assert.Single(_log.Warnings));
+    }
+
+    [Fact]
+    public void A_look_with_only_a_custom_weapon_type_keyword_is_not_flagged_and_keeps_the_old_behaviour()
+    {
+        var rapier = _skyrim.Keywords.AddNew("WeapTypeRapier");
+        LookOverride(_unique, WeaponAnimationType.TwoHandSword, rapier, _iron);
+
+        Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Empty(_log.Errors);
+        Assert.Contains("no generic base weapon", Assert.Single(_log.Warnings));
+    }
+
+    [Fact]
+    public void A_look_with_a_wrong_and_a_correct_known_keyword_is_not_flagged()
+    {
+        LookOverride(_unique, WeaponAnimationType.TwoHandSword, _sword, _greatsword, _iron);
+
+        var result = Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Empty(_log.Errors);
+        Assert.Equal("IronGreatsword", result.Changes.Single().Base!.EditorID);
+    }
+
+    [Fact]
+    public void A_look_with_an_unresolved_keyword_is_not_flagged()
+    {
+        var unresolved = new Keyword(new FormKey(_skyrim.ModKey, 0xABCDE), SkyrimRelease.SkyrimSE);
+        LookOverride(_unique, WeaponAnimationType.TwoHandSword, _sword, unresolved);
+
+        Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType);
+
+        Assert.Empty(_log.Errors);
+    }
+
+    [Fact]
+    public void A_crossbow_is_not_checked()
+    {
+        var crossbow = NewWeapon(_look, "LookCrossbow", WeaponAnimationType.Crossbow, 1f, 1f, 5, 5f, _bothHands, _swingGreat, _sword);
+
+        Assert.Null(new WeaponBases(
+            [_skyrim], new HashSet<ModKey>(), new Dictionary<FormKey, IWeaponGetter>(), _ => null, new Dictionary<FormKey, string>()).Contradiction(crossbow));
+    }
+
+    [Fact]
+    public void With_merging_on_a_contradicting_look_is_skipped_and_the_patch_has_no_look_links()
+    {
+        var (battleaxe, nordic) = (_skyrim.Keywords.AddNew("WeapTypeBattleaxe"), _skyrim.Keywords.AddNew("DLC2WeaponMaterialNordic"));
+        var stormfang = WithStatsOverride(NewWeapon(
+            _skyrim, "Stormfang", WeaponAnimationType.TwoHandSword, 1f, 1f, 20, 10f, _bothHands, _swingGreat, _greatsword, nordic));
+        LookOverride(stormfang, WeaponAnimationType.TwoHandAxe, _greatsword, _steel);
+        NewWeapon(_skyrim, "NordicBattleaxe", WeaponAnimationType.TwoHandAxe, 1f, 1f, 32, 20f, _bothHands, _swingGreat, battleaxe, nordic);
+
+        var result = Merge(TypeDiscrepancyHandling.TakeVisualModWeaponType, selfContained: true);
+
+        Assert.Single(_log.Errors);
+        Assert.Equal(1, result.TypeSkipped);
+        Assert.Empty(_patch.Weapons);
+        Assert.DoesNotContain(
+            _patch.EnumerateMajorRecords().SelectMany(record => record.EnumerateFormLinks().Select(link => link.FormKey).Append(record.FormKey)),
+            formKey => formKey.ModKey == _look.ModKey);
+    }
+
+    [Fact]
+    public void CopyAddedItems_with_a_winner_and_a_contradicting_look_is_an_error_and_the_item_is_not_copied()
+    {
+        var added = NewWeapon(_look, "AddedBlade", WeaponAnimationType.TwoHandAxe, 1f, 1f, 5, 5f, _bothHands, _swingGreat, _greatsword, _steel);
+        var winner = _stats.Weapons.GetOrAddAsOverride(added);
+        winner.Data = new WeaponData { AnimationType = WeaponAnimationType.OneHandSword };
+        winner.Model = new Model { File = @"Weapons\Other\blade.nif" };
+
+        var result = LookMerger.Merge(
+            LoadOrder, _patch, [new LookSource(_look, "Look Mod")], forwardNames: false, selfContained: true,
+            TypeDiscrepancyHandling.TakeVisualModWeaponType, _log, copyAddedItems: true);
+
+        Assert.Empty(_patch.Weapons);
+        Assert.Empty(result.AddedItems);
+        Assert.Equal(1, result.TypeSkipped);
+        var error = Assert.Single(_log.Errors);
+        Assert.Contains("AddedBlade", error);
+        Assert.Contains("WeapTypeGreatsword", error);
+    }
+
+    [Theory]
+    [InlineData(TypeDiscrepancyHandling.SkipMerging)]
+    [InlineData(TypeDiscrepancyHandling.TakeModlistItemType)]
+    public void The_other_settings_do_not_check_the_look_records_weapon_type_keyword(TypeDiscrepancyHandling handling)
+    {
+        LookOverride(_unique, WeaponAnimationType.TwoHandAxe, _greatsword, _iron);
+
+        Merge(handling);
+
+        Assert.Empty(_log.Errors);
+    }
+
+    [Fact]
     public void Among_equal_candidates_one_without_scripts_wins_over_a_scripted_one_with_a_lower_id()
     {
         _skyrim.Weapons.Remove(_ironGreatsword.FormKey);

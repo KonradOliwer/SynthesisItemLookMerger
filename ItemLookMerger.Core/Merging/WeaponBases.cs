@@ -32,6 +32,24 @@ internal sealed partial class WeaponBases
     [GeneratedRegex(@"^(DLC\d+)?Weap(on)?Material", RegexOptions.IgnoreCase)]
     private static partial Regex MaterialKeywordName();
 
+    /// <summary>
+    /// The weapon-type keywords (EditorIDs, lower case) a weapon of each animation type carries in vanilla. A crossbow has none of its
+    /// own, so it is not listed and never checked.
+    /// </summary>
+    private static readonly Dictionary<WeaponAnimationType, string[]> ExpectedTypeKeywords = new()
+    {
+        [WeaponAnimationType.OneHandSword] = ["weaptypesword"],
+        [WeaponAnimationType.OneHandDagger] = ["weaptypedagger"],
+        [WeaponAnimationType.OneHandAxe] = ["weaptypewaraxe"],
+        [WeaponAnimationType.OneHandMace] = ["weaptypemace"],
+        [WeaponAnimationType.TwoHandSword] = ["weaptypegreatsword"],
+        [WeaponAnimationType.TwoHandAxe] = ["weaptypebattleaxe", "weaptypewarhammer"],
+        [WeaponAnimationType.Bow] = ["weaptypebow"],
+        [WeaponAnimationType.Staff] = ["weaptypestaff"],
+    };
+
+    private static readonly HashSet<string> KnownTypeKeywords = ExpectedTypeKeywords.Values.SelectMany(names => names).ToHashSet();
+
     /// <summary>A base candidate with its animation type, weapon-type keywords and material keywords (lower case), worked out once.</summary>
     private sealed record Candidate(BaseWeapon Weapon, WeaponAnimationType Animation, string[] Types, string[] Materials);
 
@@ -54,9 +72,12 @@ internal sealed partial class WeaponBases
     /// A look plugin's override of a weapon, or null: it stands in for a base item no other plugin overrides (as for an item that is
     /// forwarded whole).
     /// </param>
+    /// <param name="patchKeywords">
+    /// The EditorIDs of the keywords the patch held before this run (an earlier patcher's), so a keyword only they define resolves.
+    /// </param>
     public WeaponBases(
         IReadOnlyList<ISkyrimModGetter> loadOrder, IReadOnlySet<ModKey> lookKeys, IReadOnlyDictionary<FormKey, IWeaponGetter> patchAtStart,
-        Func<FormKey, (ModKey Source, IWeaponGetter Record)?> lookOverride)
+        Func<FormKey, (ModKey Source, IWeaponGetter Record)?> lookOverride, IReadOnlyDictionary<FormKey, string> patchKeywords)
     {
         _loadOrder = loadOrder;
         _lookKeys = lookKeys;
@@ -65,7 +86,7 @@ internal sealed partial class WeaponBases
         _positions = loadOrder.Select((mod, index) => (mod.ModKey, index)).ToDictionary(pair => pair.ModKey, pair => pair.index);
         _keywordIds = new Lazy<Dictionary<FormKey, string>>(() =>
         {
-            var ids = new Dictionary<FormKey, string>();
+            var ids = new Dictionary<FormKey, string>(patchKeywords);
             foreach (var mod in loadOrder)
             {
                 foreach (var keyword in mod.Keywords)
@@ -75,6 +96,21 @@ internal sealed partial class WeaponBases
             }
             return ids;
         });
+    }
+
+    /// <summary>
+    /// The known vanilla weapon-type keywords of <paramref name="look"/> when its animation type contradicts them: it has at least
+    /// one and none is expected for its animation type. Custom ones (WeapTypeRapier, ...) are ignored. Null when they agree, when it
+    /// has no known one, when its animation type has no expected keyword, or when one of its keywords is unresolved (it might be the
+    /// expected one, so the look is not called inconsistent).
+    /// </summary>
+    public string[]? Contradiction(IWeaponGetter look)
+    {
+        if (look.Data is not { } data || !ExpectedTypeKeywords.TryGetValue(data.AnimationType, out var expected)) return null;
+        var links = look.Keywords ?? [];
+        if (links.Any(link => NameOf(link).Length == 0)) return null;
+        var found = links.Select(NameOf).Where(name => KnownTypeKeywords.Contains(name.ToLowerInvariant())).Distinct().ToArray();
+        return found.Length > 0 && !found.Any(name => expected.Contains(name.ToLowerInvariant())) ? found : null;
     }
 
     /// <summary>

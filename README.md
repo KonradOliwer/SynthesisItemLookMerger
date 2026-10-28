@@ -85,6 +85,16 @@ A wide change is not merged: the item is left untouched, and the log names it as
 The base item is a generic weapon of the look's type and of the stats side's material, so the plain greatsword of the same material
 for a one-handed sword that looks like a greatsword.
 
+The look's type, animation type included, always comes from the visual mod. A look record whose animation type contradicts its own
+weapon-type keywords is inconsistent: it has at least one known vanilla type keyword and none of its known ones is expected for its
+animation type. Custom `WeapType...` keywords (WeapTypeRapier, WeapTypeKatana, ...) are ignored, and a look with a keyword that cannot
+be resolved is not called inconsistent. The expected keywords are (OneHandSword `WeapTypeSword`, OneHandDagger `WeapTypeDagger`, OneHandAxe `WeapTypeWarAxe`, OneHandMace `WeapTypeMace`, TwoHandSword
+`WeapTypeGreatsword`, TwoHandAxe `WeapTypeBattleaxe` or `WeapTypeWarhammer`, Bow `WeapTypeBow`, Staff `WeapTypeStaff`). Crossbows are not
+checked, and a look without a known weapon-type keyword is not inconsistent (it keeps the normal base lookup). Such an item is reported as an error (item, look plugin,
+animation type and the contradicting keywords) and is not merged: it keeps the modlist winner's version. Nothing is guessed and
+there is no fallback. This applies only where a base item is looked for, that is `TakeVisualModWeaponType` on an item whose animation
+type differs from the stats side's (also for items a look plugin added when `CopyAddedItems` copies them).
+
 1. The look record's **template** is used when it is such a weapon itself.
 2. Otherwise the best weapon that passes the same rules. It has the look's animation type, shares a weapon-type keyword
    (`WeapType...`) with the look record, and carries at least one of the stats side's material keywords (`WeapMaterial...`,

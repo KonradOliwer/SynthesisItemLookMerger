@@ -162,6 +162,7 @@ internal static class LookMerger
         private Dictionary<FormKey, Pick> _weaponPicks = [];
         private WeaponBases? _weaponBases;
         private readonly Dictionary<FormKey, IWeaponGetter> _patchWeaponsAtStart;
+        private readonly Dictionary<FormKey, string> _patchKeywordsAtStart;
         private int _typeSkipped;
         private int _armorTypeKept;
         private readonly List<AssetNeed> _assets = [];
@@ -189,6 +190,8 @@ internal static class LookMerger
             _strongestFirst = _weakestFirst.Reverse().ToList();
             // Base weapons never come from what this run writes into the patch, so the weapons are copied before anything changes.
             _patchWeaponsAtStart = patch.Weapons.ToDictionary(weapon => weapon.FormKey, weapon => (IWeaponGetter)weapon.DeepCopy());
+            _patchKeywordsAtStart = patch.Keywords.Where(keyword => !string.IsNullOrEmpty(keyword.EditorID))
+                .ToDictionary(keyword => keyword.FormKey, keyword => keyword.EditorID!);
             // What the patch holds already (an earlier patcher's records): the copies must not take their EditorIDs or FormKeys.
             var existing = patch.EnumerateMajorRecords().ToList();
             _editorIDs = existing.Select(record => record.EditorID).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -472,6 +475,15 @@ internal static class LookMerger
                 _log.Verbose($"{what}; the modlist's type is kept and the look is forwarded.");
                 return true;
             }
+            // The look's type always comes from the visual mod; a record whose animation contradicts its own weapon-type keyword is no basis.
+            if (EnsureWeaponBases().Contradiction(lookWeapon) is { } contradicting)
+            {
+                _log.Error(
+                    $"{what}: the look's animation type {lookWeapon.Data!.AnimationType} contradicts its weapon-type keyword(s) "
+                    + $"{string.Join(", ", contradicting)} ({pick.Source.ModKey} is inconsistent); the item is not merged and keeps the modlist winner's version.");
+                _typeSkipped++;
+                return false;
+            }
             baseItem = EnsureWeaponBases().Find(stats.Version.FormKey, statsWeapon, lookWeapon);
             if (baseItem == null)
             {
@@ -485,7 +497,8 @@ internal static class LookMerger
 
         private WeaponBases EnsureWeaponBases() => _weaponBases ??= new WeaponBases(
             _loadOrder, _sourceKeys, _patchWeaponsAtStart,
-            formKey => _weaponPicks.TryGetValue(formKey, out var pick) && pick.Record is IWeaponGetter weapon ? (pick.Source.ModKey, weapon) : null);
+            formKey => _weaponPicks.TryGetValue(formKey, out var pick) && pick.Record is IWeaponGetter weapon ? (pick.Source.ModKey, weapon) : null,
+            _patchKeywordsAtStart);
 
         /// <summary>
         /// The dependency walk: from the given links through the visual fields of every form a look plugin contains. A form no look
