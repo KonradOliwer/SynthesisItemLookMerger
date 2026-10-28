@@ -172,7 +172,8 @@ public static class PatchRun
         if (assets != null)
             log.Info(
                 $"Assets copied: {assets.Copied}. Vanilla assets skipped: {assets.BaseGameSkipped}. "
-                + $"Assets from other mods (warned): {assets.FromOtherMods}. Missing assets (warned): {assets.Missing}.");
+                + $"Assets from other mods (warned): {assets.FromOtherMods}. Missing assets (warned): {assets.Missing}."
+                + (assets.BodySlideOutputs > 0 ? $" {assets.BodySlideOutputs} files are left to BodySlide output (Verbose logging lists them)." : ""));
         if (creditsPath != null) log.Info($"Credits: {creditsPath}");
         log.Info($"Warnings: {warnings}. Errors: {errors}.");
     }

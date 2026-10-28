@@ -17,6 +17,7 @@ internal sealed class AssetFolder
     private readonly string _folder;
     private readonly Func<string, bool> _archiveApplies;
     private Dictionary<string, IArchiveFile>? _archiveFiles;
+    private ILookup<string, string>? _byFileName;
 
     private AssetFolder(IFileSystem fileSystem, string folder, Func<string, bool> archiveApplies)
     {
@@ -47,6 +48,35 @@ internal sealed class AssetFolder
     {
         if (LoosePath(path) is { } loose && _fileSystem.File.Exists(loose)) return _fileSystem.File.ReadAllBytes(loose);
         return ArchiveFiles().TryGetValue(AssetPath.Key(path), out var file) ? file.GetBytes() : null;
+    }
+
+    /// <summary>
+    /// The data-relative paths of the loose files and archived files with this file name, ordered. The file names of the folder are
+    /// indexed once, on first use; a folder that cannot be listed counts as empty.
+    /// </summary>
+    public IReadOnlyList<string> FindByFileName(string fileName)
+    {
+        if (_byFileName == null)
+        {
+            var paths = new List<string>();
+            try
+            {
+                if (_fileSystem.Directory.Exists(_folder))
+                    paths.AddRange(_fileSystem.Directory.EnumerateFiles(_folder, "*", SearchOption.AllDirectories)
+                        .Select(file => _fileSystem.Path.GetRelativePath(_folder, file)));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A folder that cannot be listed only means no same-named file is found in it.
+            }
+            paths.AddRange(ArchiveFiles().Keys);
+            _byFileName = paths
+                .Select(AssetPath.Key)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToLookup(path => path[(path.LastIndexOf('\\') + 1)..], StringComparer.OrdinalIgnoreCase);
+        }
+        return _byFileName[fileName].ToList();
     }
 
     /// <summary>The loose file's full path, or null when the path would leave the folder.</summary>
@@ -82,6 +112,17 @@ internal static class AssetPath
 {
     /// <summary>The dictionary key of a path: backslashes, no leading separator.</summary>
     public static string Key(string path) => path.Replace('/', '\\').TrimStart('\\');
+
+    /// <summary>
+    /// The key of a path written by hand (a BodySlide OutputPath): like <see cref="Key"/>, without a leading "Data\" or ".\" segment,
+    /// doubled separators or a trailing separator.
+    /// </summary>
+    public static string Normalize(string path)
+    {
+        var segments = Key(path).Split('\\', StringSplitOptions.RemoveEmptyEntries).Where(segment => segment != ".").ToList();
+        if (segments.Count > 1 && string.Equals(segments[0], "Data", StringComparison.OrdinalIgnoreCase)) segments.RemoveAt(0);
+        return string.Join('\\', segments);
+    }
 
     /// <summary>Whether the path is data-relative and stays inside Data: not rooted, no ".." segment, no empty name.</summary>
     public static bool IsSafe(string path)

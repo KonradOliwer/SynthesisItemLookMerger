@@ -211,6 +211,25 @@ with the meshes and textures the forwarded looks need, including the textures in
 - When two look mods have the same BodySlide project or `ShapeData` file, the one from the higher-priority look mod is copied.
 - Base-game files (the game's and its DLCs' and Creation Club archives) are skipped, also when a replacer mod overrides them. Files
   that only another mod provides are not copied, and the log warns and says where they come from.
+- Expected BodySlide output: a `.nif` or `.tri` no look mod has but that a BodySlide project builds is not warned about as lacking.
+  Every enabled MO2 mod's loose `CalienteTools\BodySlide\SliderSets\*.osp` projects count (Overwrite included; not only look mods;
+  disabled mods and the forward folder do not; only `.osp` files are read for this, a file that is not valid XML is skipped with one
+  warning), whatever the output mod is called. The index is built only when such a path is missing. A project builds
+  `<OutputPath>\<OutputFile>.nif` (`_0.nif` and `_1.nif` with GenWeights) and may also write `<OutputPath>\<OutputFile>.tri`, which is
+  treated as a possible output either way. The OutputPath is read like asset paths: a leading `Data\` or `.\`, forward slashes,
+  doubled and trailing separators and letter case make no difference. When an enabled mod that is not a look mod provides the file
+  (loose, Overwrite included, or in one of its BSAs, whichever the name), or the game's Data folder has it loose, it is not copied and
+  only counted. A look mod (or its BSA) never counts as the provider: its file gets the usual "comes from MO2 mod" warning. The
+  summary's "N files are left to BodySlide output" (shown only when N is above 0; Verbose logging lists each) counts these files
+  together with the meshes left out by the rule above, each file once. When nothing provides it, the log warns that it is a
+  BodySlide output that has not been built, naming the slider set and the mod of its project, and says to build it with BodySlide.
+  Exception: a `.tri` that nothing provides, while a mesh the same slider set builds is provided by a non-look mod, is a set that
+  was built and wrote no `.tri`; it gets the usual missing-asset warning, with the same-name hint below.
+- A referenced file that is missing everywhere, while the same look mod has a file with the same name elsewhere (loose or in the BSAs
+  named after its plugin), gets a warning naming the look mod, the item, the referenced path and where the same-named file is (at most
+  3 paths, then "and N more"). It is likely a packaging error in
+  the look mod: the mesh points to a path the mod does not ship, so nothing is copied or remapped, and the mod behaves the same with or
+  without the patcher. Without a same-named file the usual missing-asset warning is given.
 - When two look mods have the same file, the one with the higher priority in MO2's left panel provides it.
 - The new content is written completely before it replaces the old, so a failed run keeps the previous output. The patcher only
   manages a folder that holds its hidden `.itemlookmerger` marker file, or one that is empty (it then takes it over). Any other

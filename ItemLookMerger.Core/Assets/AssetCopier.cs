@@ -10,7 +10,8 @@ namespace ItemLookMerger.Core.Assets;
 
 /// <param name="FromOtherMods">Assets another mod (or the game's Data folder, outside the vanilla archives) provides; each is warned about.</param>
 /// <param name="Missing">Assets nothing provides; each is warned about.</param>
-public sealed record AssetCopyResult(int Copied, int BaseGameSkipped, int FromOtherMods, int Missing = 0);
+/// <param name="BodySlideOutputs">Assets a BodySlide project builds that another mod provides; they are left to it, without a warning.</param>
+public sealed record AssetCopyResult(int Copied, int BaseGameSkipped, int FromOtherMods, int Missing = 0, int BodySlideOutputs = 0);
 
 /// <summary>
 /// Step 6: copies the assets of the look sources (enabled or not; never the stats side's) from their MO2 mod (loose files, then the
@@ -33,6 +34,9 @@ internal sealed class AssetCopier
     /// <summary>The BodySlide files written so far, with the MO2 priority of the mod they came from (a higher-priority mod replaces them).</summary>
     private readonly Dictionary<string, int> _bodySlideCopied = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _lookMods = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, (BodySlideSet Set, string Mod)>? _bodySlideOutputs;
+    /// <summary>The paths left to the BodySlide output, by either rule, each counted once.</summary>
+    private readonly HashSet<string> _leftToBodySlide = new(StringComparer.OrdinalIgnoreCase);
 
     /// <param name="dataFolder">The game's Data folder as this run sees it (MO2's virtual view of the enabled mods and the game).</param>
     /// <param name="loadOrder">The load order's plugins, to tell which ones are the game's own (no MO2 mod holds them).</param>
@@ -104,12 +108,13 @@ internal sealed class AssetCopier
                 {
                     case Origin.Vanilla: baseGame++; break;
                     case Origin.OtherMod: otherMods++; break;
+                    case Origin.BodySlide: _leftToBodySlide.Add(path); break;
                     default: missing++; break;
                 }
             }
             wave = next;
         }
-        return new AssetCopyResult(copied, baseGame, otherMods, missing);
+        return new AssetCopyResult(copied, baseGame, otherMods, missing, _leftToBodySlide.Count);
     }
 
     /// <param name="References">The paths the copied NIF points at (textures, SMP configs, .tri files), to copy in turn.</param>
@@ -151,6 +156,7 @@ internal sealed class AssetCopier
         // A mesh a BodySlide project builds is left to the BodySlide output: a loose file of an enabled mod (Overwrite too) that is
         // neither a look mod nor the forward folder.
         var builtBy = sets.Count == 0 ? null : _mo2.FindEnabledModWithFile(path, [.. _lookMods, _forwardFolderName]);
+        if (builtBy != null) _leftToBodySlide.Add(path);
         if (builtBy == null)
         {
             WriteFile(target, bytes!);
@@ -177,13 +183,33 @@ internal sealed class AssetCopier
     /// <summary>The look source's mod's BodySlide projects (read once per mod), or null when its plugin has no MO2 mod.</summary>
     private BodySlideProjects? BodySlideFor(LookSource source)
     {
-        if (source.ModName == null) return null;
-        if (!_bodySlide.TryGetValue(source.ModName, out var projects))
+        return source.ModName == null ? null : BodySlideOf(source.ModName);
+    }
+
+    /// <summary>A mod's BodySlide projects, read (and warned about) once per run.</summary>
+    private BodySlideProjects BodySlideOf(string modName)
+    {
+        if (!_bodySlide.TryGetValue(modName, out var projects))
         {
-            projects = BodySlideProjects.Read(_fileSystem, _mo2.ModFolder(source.ModName), source.ModName, _log);
-            _bodySlide[source.ModName] = projects;
+            projects = BodySlideProjects.Read(_fileSystem, _mo2.ModFolder(modName), modName, _log);
+            _bodySlide[modName] = projects;
         }
         return projects;
+    }
+
+    /// <summary>
+    /// Every mesh and .tri file the slider sets of all enabled mods (look mods or not; Overwrite included, the forward folder not) may
+    /// build, with the set and the mod of its .osp. Built once, on first use; the highest-priority mod's set is kept for a shared path.
+    /// </summary>
+    private Dictionary<string, (BodySlideSet Set, string Mod)> BodySlideOutputs()
+    {
+        if (_bodySlideOutputs != null) return _bodySlideOutputs;
+        _bodySlideOutputs = new Dictionary<string, (BodySlideSet, string)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mod in _mo2.Mods.Where(mod => mod.Enabled && !string.Equals(mod.Name, _forwardFolderName, StringComparison.OrdinalIgnoreCase)))
+            foreach (var set in BodySlideOf(mod.Name).Sets)
+                foreach (var output in set.Outputs.Append(set.Tri))
+                    _bodySlideOutputs.TryAdd(AssetPath.Normalize(output), (set, mod.Name));
+        return _bodySlideOutputs;
     }
 
     /// <summary>
@@ -217,7 +243,19 @@ internal sealed class AssetCopier
         return count;
     }
 
-    private enum Origin { Vanilla, OtherMod, Missing }
+    /// <summary>
+    /// What provides the built BodySlide output: a loose file of an enabled mod (Overwrite too) or a BSA of one, neither a look mod nor
+    /// the forward folder, or a loose file in the game's Data folder; null when nothing does.
+    /// </summary>
+    private string? BuiltOutputProvider(string path)
+    {
+        string?[] except = [.. _lookMods, _forwardFolderName];
+        if (_mo2.FindEnabledModWithFile(path, except) is { } looseMod) return $"MO2 mod \"{looseMod.Name}\"";
+        if (_dataFolder.LooseExists(path)) return "the game's Data folder";
+        return _mo2.FindEnabledModWithArchivedFile(path, except) is { } bsaMod ? $"a BSA of MO2 mod \"{bsaMod.Name}\"" : null;
+    }
+
+    private enum Origin { Vanilla, OtherMod, BodySlide, Missing }
 
     /// <summary>Where a path that no look source's mod has comes from; everything but vanilla content is warned about.</summary>
     private Origin Classify(string path, AssetNeed need)
@@ -234,6 +272,25 @@ internal sealed class AssetCopier
             return Origin.Vanilla;
         }
         var looseMod = _mo2.FindModWithFile(path, exceptMod: _forwardFolderName);
+        var isOutputCandidate = path.EndsWith(".nif", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".tri", StringComparison.OrdinalIgnoreCase);
+        if (isOutputCandidate && BodySlideOutputs().TryGetValue(AssetPath.Normalize(path), out var built))
+        {
+            // Expected BodySlide output: no warning when some enabled mod that is not a look mod (or the Data folder) already has the built file.
+            if (BuiltOutputProvider(path) is { } provider)
+            {
+                _log.Verbose($"Asset {path}: not in a look source's mod; it is an output of BodySlide project \"{built.Set.Name}\" (MO2 mod \"{built.Mod}\") and is left to {provider}.");
+                return Origin.BodySlide;
+            }
+            // A look mod's own prebuilt file is no build; a .tri the set did not write, while its mesh is built, is just missing.
+            var lookModHasIt = looseMod is { Enabled: true } || _mo2.FindEnabledModWithArchivedFile(path, _forwardFolderName) != null;
+            var triNotWritten = path.EndsWith(".tri", StringComparison.OrdinalIgnoreCase)
+                && built.Set.Outputs.Any(output => BuiltOutputProvider(output) != null);
+            if (!lookModHasIt && !triNotWritten)
+            {
+                _log.Warning($"{need.Item}: asset {path} {notIn} and was not copied; it is an output of BodySlide project \"{built.Set.Name}\" (MO2 mod \"{built.Mod}\") that has not been built yet. Build it with BodySlide.");
+                return Origin.Missing;
+            }
+        }
         if (looseMod is { Enabled: true })
         {
             _log.Warning(Warn($"it comes from MO2 mod \"{looseMod.Name}\""));
@@ -253,6 +310,17 @@ internal sealed class AssetCopier
         {
             _log.Warning(Warn($"only the disabled MO2 mod \"{looseMod.Name}\" has it"));
             return Origin.OtherMod;
+        }
+        var sameName = SourceFolder(need.Source)?.FindByFileName(path[(path.LastIndexOf('\\') + 1)..]) ?? [];
+        if (sameName.Count > 0)
+        {
+            var shown = string.Join(", ", sameName.Take(3).Select(found => $"\"{found}\""));
+            if (sameName.Count > 3) shown += $" and {sameName.Count - 3} more";
+            _log.Warning(
+                $"{need.Item}: asset {path} {notIn}, and no other MO2 mod or vanilla archive has it, but the mod has a file with the same name at {shown}. "
+                + "This is likely a packaging error in the look mod: the mesh points to a path the mod doesn't ship, so the file is not copied "
+                + "and the mod behaves the same with or without the patcher.");
+            return Origin.Missing;
         }
         _log.Warning(Warn("no MO2 mod or vanilla archive has it"));
         return Origin.Missing;

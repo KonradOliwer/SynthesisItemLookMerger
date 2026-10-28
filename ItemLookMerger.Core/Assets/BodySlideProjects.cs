@@ -7,7 +7,8 @@ namespace ItemLookMerger.Core.Assets;
 /// <param name="Project">The .osp file, relative to the mod folder.</param>
 /// <param name="DataFolder">The folder under ShapeData that holds the set's source NIFs, or null when the set names none.</param>
 /// <param name="Outputs">The data-relative meshes a BodySlide build of the set writes.</param>
-internal sealed record BodySlideSet(string Project, string Name, string? DataFolder, IReadOnlyList<string> Outputs);
+/// <param name="Tri">The data-relative .tri morph file BodySlide may write next to the meshes (one for both weights).</param>
+internal sealed record BodySlideSet(string Project, string Name, string? DataFolder, IReadOnlyList<string> Outputs, string Tri);
 
 /// <param name="Path">The group file, relative to the mod folder.</param>
 internal sealed record BodySlideGroup(string Path, IReadOnlySet<string> Members);
@@ -25,20 +26,21 @@ internal sealed class BodySlideProjects
     private readonly string _modName;
     private readonly ILog _log;
 
-    private BodySlideProjects(
-        IFileSystem fileSystem, string modFolder, string modName, ILog log, IReadOnlyList<BodySlideSet> sets, IReadOnlyList<BodySlideGroup> groups)
+    private IReadOnlyList<BodySlideGroup>? _groups;
+
+    private BodySlideProjects(IFileSystem fileSystem, string modFolder, string modName, ILog log, IReadOnlyList<BodySlideSet> sets)
     {
         _fileSystem = fileSystem;
         _modFolder = modFolder;
         _modName = modName;
         _log = log;
         Sets = sets;
-        Groups = groups;
     }
 
     public IReadOnlyList<BodySlideSet> Sets { get; }
 
-    public IReadOnlyList<BodySlideGroup> Groups { get; }
+    /// <summary>The SliderGroups files, parsed (and warned about) once, on first use: the output index never needs them.</summary>
+    public IReadOnlyList<BodySlideGroup> Groups => _groups ??= ReadGroups();
 
     public static BodySlideProjects Read(IFileSystem fileSystem, string modFolder, string modName, ILog log)
     {
@@ -55,30 +57,35 @@ internal sealed class BodySlideProjects
                 var fileName = outputFile?.Value.Trim();
                 if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(outputPath) || string.IsNullOrEmpty(fileName)) continue;
                 if (fileName.EndsWith(".nif", StringComparison.OrdinalIgnoreCase)) fileName = fileName[..^4];
-                var stem = AssetPath.Key(outputPath).TrimEnd('\\') + @"\" + fileName;
+                var stem = AssetPath.Normalize(outputPath + @"\" + fileName);
                 var genWeights = string.Equals((string?)outputFile!.Attribute("GenWeights"), "true", StringComparison.OrdinalIgnoreCase);
                 var dataFolder = set.Element("DataFolder")?.Value.Trim();
                 sets.Add(new BodySlideSet(
                     project, name, string.IsNullOrEmpty(dataFolder) ? null : dataFolder,
-                    genWeights ? [stem + "_0.nif", stem + "_1.nif"] : [stem + ".nif"]));
+                    genWeights ? [stem + "_0.nif", stem + "_1.nif"] : [stem + ".nif"], stem + ".tri"));
             }
         }
 
+        return new BodySlideProjects(fileSystem, fileSystem.Path.GetFullPath(modFolder), modName, log, sets);
+    }
+
+    private IReadOnlyList<BodySlideGroup> ReadGroups()
+    {
         var groups = new List<BodySlideGroup>();
-        foreach (var file in Files(fileSystem, fileSystem.Path.Combine(modFolder, Root, "SliderGroups"), "*.xml", SearchOption.AllDirectories, modName, log))
+        foreach (var file in Files(_fileSystem, _fileSystem.Path.Combine(_modFolder, Root, "SliderGroups"), "*.xml", SearchOption.AllDirectories, _modName, _log))
         {
-            var path = fileSystem.Path.GetRelativePath(modFolder, file);
-            if (Load(fileSystem, file, path, modName, log) is not { } document) continue;
+            var path = _fileSystem.Path.GetRelativePath(_modFolder, file);
+            if (Load(_fileSystem, file, path, _modName, _log) is not { } document) continue;
             var members = document.Descendants("Member").Select(member => (string?)member.Attribute("name")).OfType<string>();
             groups.Add(new BodySlideGroup(path, members.ToHashSet(StringComparer.OrdinalIgnoreCase)));
         }
-        return new BodySlideProjects(fileSystem, fileSystem.Path.GetFullPath(modFolder), modName, log, sets, groups);
+        return groups;
     }
 
     /// <summary>The slider sets that build <paramref name="meshPath"/>.</summary>
     public IReadOnlyList<BodySlideSet> Producing(string meshPath)
     {
-        var key = AssetPath.Key(meshPath);
+        var key = AssetPath.Normalize(meshPath);
         return Sets.Where(set => set.Outputs.Any(output => string.Equals(output, key, StringComparison.OrdinalIgnoreCase))).ToList();
     }
 
@@ -99,7 +106,10 @@ internal sealed class BodySlideProjects
         try
         {
             return fileSystem.Directory.Exists(folder)
-                ? fileSystem.Directory.EnumerateFiles(folder, pattern, option).Order(StringComparer.OrdinalIgnoreCase).ToList()
+                ? fileSystem.Directory.EnumerateFiles(folder, pattern, option)
+                    .Where(file => file.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase))
+                    .Order(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
                 : [];
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

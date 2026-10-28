@@ -186,6 +186,12 @@ public sealed class Mo2Instance
     public ModListEntry? FindEnabledModWithArchivedFile(string dataRelativePath, string? exceptMod = null) =>
         ModsByPreference(exceptMod).Where(mod => mod.Enabled).FirstOrDefault(mod => ModAssets(mod.Name).ArchivesContain(dataRelativePath));
 
+    /// <summary>The highest-priority enabled mod, other than <paramref name="exceptMods"/>, whose BSAs hold <paramref name="dataRelativePath"/>, or null.</summary>
+    public ModListEntry? FindEnabledModWithArchivedFile(string dataRelativePath, params string?[] exceptMods) =>
+        ModsByPreference(null)
+            .Where(mod => mod.Enabled && !exceptMods.Contains(mod.Name, StringComparer.OrdinalIgnoreCase))
+            .FirstOrDefault(mod => ModAssets(mod.Name).ArchivesContain(dataRelativePath));
+
     /// <summary>The loose files and every BSA of a mod folder.</summary>
     internal AssetFolder ModAssets(string modName)
     {

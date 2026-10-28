@@ -339,7 +339,7 @@ public class AssetTests
 
         var result = Copy(new AssetNeed(@"Meshes\Armor\Fancy\Fancy_go.nif", "ArmorIronCuirass", Source("Look.esp", "Disabled Looks", 5)));
 
-        Assert.Equal(new AssetCopyResult(Copied: 4, BaseGameSkipped: 0, FromOtherMods: 0), result);
+        Assert.Equal(new AssetCopyResult(Copied: 4, BaseGameSkipped: 0, FromOtherMods: 0, Missing: 0, BodySlideOutputs: 1), result);
         Assert.False(InForward(@"Meshes\Armor\Fancy\Fancy_go.nif"));
         Assert.True(InForward(@"Textures\Armor\Fancy\fancy_d.dds"));
         Assert.True(InForward(@"SKSE\Plugins\hdtSkinnedMeshConfigs\fancy.xml"));
@@ -438,6 +438,278 @@ public class AssetTests
         Assert.Equal(1, result.Copied);
         Assert.Equal([1], _fileSystem.File.ReadAllBytes(Path.Combine(Forward, @"Textures\Steel\steel.dds")));
         Assert.Contains(_log.Warnings, warning => warning.Contains("different content"));
+    }
+
+    private const string HandsFolder = @"meshes\actors\character\character assets";
+    private const string HandsTri = $@"{HandsFolder}\femalehands.tri";
+
+    private void AddBodyProject(string mod = "Base Fixes", bool genWeights = false) =>
+        AddLookFile($@"{SliderSets}\Body.osp", Osp("Body Hands", "Body", HandsFolder, "femalehands", genWeights), mod);
+
+    private AssetNeed Need(string path) => new(path, "ArmorGloves", Source("Look.esp", "Disabled Looks", 5));
+
+    [Fact]
+    public void A_tri_another_mods_bodyslide_project_builds_and_a_mod_provides_is_not_warned_about_or_copied()
+    {
+        AddBodyProject();
+        AddLookFile(HandsTri, [5], mod: "Stats Overhaul");
+
+        var result = Copy(Need(HandsTri));
+
+        Assert.Equal(new AssetCopyResult(Copied: 0, BaseGameSkipped: 0, FromOtherMods: 0, Missing: 0, BodySlideOutputs: 1), result);
+        Assert.Empty(_log.Warnings);
+        Assert.False(InForward(HandsTri));
+        Assert.Contains(_log.Verboses, line => line.Contains("femalehands.tri") && line.Contains("Body Hands"));
+    }
+
+    [Fact]
+    public void A_bodyslide_output_nobody_provides_is_warned_about_with_the_set_and_mod()
+    {
+        AddBodyProject();
+
+        var result = Copy(Need(HandsTri));
+
+        Assert.Equal(1, result.Missing);
+        Assert.Equal(0, result.BodySlideOutputs);
+        Assert.Contains(_log.Warnings, warning =>
+            warning.Contains("femalehands.tri") && warning.Contains("Build it with BodySlide") && warning.Contains("\"Body Hands\"") && warning.Contains("\"Base Fixes\""));
+    }
+
+    [Fact]
+    public void Gen_weights_outputs_of_a_non_look_mods_project_are_left_to_the_bodyslide_output()
+    {
+        AddBodyProject(genWeights: true);
+        AddLookFile($@"{HandsFolder}\femalehands_0.nif", [1], mod: "Stats Overhaul");
+        AddLookFile($@"{HandsFolder}\femalehands_1.nif", [2], mod: "Stats Overhaul");
+
+        var result = Copy(Need($@"{HandsFolder}\femalehands_0.nif"), Need($@"{HandsFolder}\femalehands_1.nif"), Need($@"{HandsFolder}\femalehands.nif"));
+
+        Assert.Equal(2, result.BodySlideOutputs);
+        Assert.Equal(1, result.Missing);
+        Assert.Single(_log.Warnings);
+        Assert.Contains("femalehands.nif", _log.Warnings[0]);
+    }
+
+    [Fact]
+    public void A_malformed_osp_in_a_non_look_mod_is_warned_about_once_and_the_run_continues()
+    {
+        AddLookFile($@"{SliderSets}\Broken.osp", "<SliderSetInfo><SliderSet name=", mod: "Base Fixes");
+
+        var result = Copy(Need(@"meshes\armor\nowhere.tri"), Need(@"meshes\armor\nowhere2.tri"));
+
+        Assert.Equal(2, result.Missing);
+        Assert.Single(_log.Warnings, warning => warning.Contains("Broken.osp") && warning.Contains("skipped"));
+    }
+
+    /// <summary>A minimal uncompressed Skyrim SE BSA holding one file.</summary>
+    private static byte[] Bsa(string dataPath, byte[] content)
+    {
+        var folder = Path.GetDirectoryName(dataPath)!;
+        var name = Path.GetFileName(dataPath);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        var folderBlock = 1 + folder.Length + 1 + 16;
+        var dataOffset = 36 + 24 + folderBlock + name.Length + 1;
+        writer.Write("BSA\0"u8.ToArray());
+        writer.Write(105u);
+        writer.Write(36u);
+        writer.Write(3u);
+        writer.Write(1u);
+        writer.Write(1u);
+        writer.Write((uint)(folder.Length + 1));
+        writer.Write((uint)(name.Length + 1));
+        writer.Write(0u);
+        writer.Write(0UL);
+        writer.Write(1u);
+        writer.Write(0u);
+        writer.Write((ulong)(36 + 24 + name.Length + 1));
+        writer.Write((byte)(folder.Length + 1));
+        writer.Write(System.Text.Encoding.ASCII.GetBytes(folder + "\0"));
+        writer.Write(0UL);
+        writer.Write((uint)content.Length);
+        writer.Write((uint)dataOffset);
+        writer.Write(System.Text.Encoding.ASCII.GetBytes(name + "\0"));
+        writer.Write(content);
+        return stream.ToArray();
+    }
+
+    private static readonly LookSource OtherLook = new(TestPlugins.NewMod("Other.esp"), "Better Iron Armor", 5);
+
+    [Fact]
+    public void A_disabled_mods_osp_is_ignored_by_the_bodyslide_index()
+    {
+        AddBodyProject(mod: "Disabled Looks");
+        AddLookFile(HandsTri, [5], mod: "Stats Overhaul");
+
+        var result = Copy(new AssetNeed(HandsTri, "ArmorGloves", OtherLook));
+
+        Assert.Equal(0, result.BodySlideOutputs);
+        Assert.Equal(1, result.FromOtherMods);
+        Assert.Contains(_log.Warnings, warning => warning.Contains("\"Stats Overhaul\""));
+    }
+
+    [Fact]
+    public void The_forward_folders_osp_is_ignored_by_the_bodyslide_index()
+    {
+        // The fixture's modlist has no forward folder; enable it so only the exclusion keeps its .osp out of the index.
+        var modlist = Path.Combine(Mo2Fixtures.PortableProfile, "modlist.txt");
+        _fileSystem.File.AppendAllText(modlist, "+OUTPUT ItemLookMerger\n");
+        AddBodyProject(mod: "OUTPUT ItemLookMerger");
+        AddLookFile(HandsTri, [5], mod: "Stats Overhaul");
+
+        var result = Copy(new AssetNeed(HandsTri, "ArmorGloves", OtherLook));
+
+        Assert.Equal(0, result.BodySlideOutputs);
+        Assert.Equal(1, result.FromOtherMods);
+    }
+
+    [Fact]
+    public void A_bsa_of_a_non_look_mod_provides_a_bodyslide_output()
+    {
+        AddBodyProject();
+        _fileSystem.AddFile(Path.Combine(Mods, "Stats Overhaul", "Stats.bsa"), new MockFileData(Bsa(HandsTri, [5])));
+
+        var result = Copy(Need(HandsTri));
+
+        Assert.Equal(1, result.BodySlideOutputs);
+        Assert.Empty(_log.Warnings);
+        Assert.Contains(_log.Verboses, line => line.Contains("a BSA of MO2 mod \"Stats Overhaul\""));
+    }
+
+    [Fact]
+    public void The_game_data_folder_provides_a_bodyslide_output()
+    {
+        AddBodyProject();
+        _fileSystem.AddFile(Path.Combine(Mo2Fixtures.PortableData, HandsTri), new MockFileData([5]));
+
+        var result = Copy(Need(HandsTri));
+
+        Assert.Equal(1, result.BodySlideOutputs);
+        Assert.Empty(_log.Warnings);
+        Assert.Contains(_log.Verboses, line => line.Contains("the game's Data folder"));
+    }
+
+    [Fact]
+    public void A_look_mod_that_is_the_only_provider_is_not_a_bodyslide_output()
+    {
+        AddBodyProject();
+        AddLookFile(HandsTri, [5], mod: "Stats Overhaul");
+
+        var result = Copy(
+            Need(HandsTri),
+            new AssetNeed(@"Textures\Armor\other_d.dds", "ArmorGloves", Source("Stats.esp", "Stats Overhaul", 3)));
+
+        Assert.Equal(0, result.BodySlideOutputs);
+        Assert.Contains(_log.Warnings, warning => warning.Contains("femalehands.tri") && warning.Contains("comes from MO2 mod \"Stats Overhaul\""));
+        Assert.DoesNotContain(_log.Warnings, warning => warning.Contains("Build it with BodySlide"));
+    }
+
+    [Fact]
+    public void A_look_mods_bsa_is_not_a_bodyslide_output_provider_either()
+    {
+        AddBodyProject();
+        _fileSystem.AddFile(Path.Combine(Mods, "Stats Overhaul", "Stats.bsa"), new MockFileData(Bsa(HandsTri, [5])));
+
+        var result = Copy(
+            Need(HandsTri),
+            new AssetNeed(@"Textures\Armor\other_d.dds", "ArmorGloves", Source("Stats.esp", "Stats Overhaul", 3)));
+
+        Assert.Equal(0, result.BodySlideOutputs);
+        Assert.Contains(_log.Warnings, warning => warning.Contains("femalehands.tri") && warning.Contains("a BSA of MO2 mod \"Stats Overhaul\""));
+    }
+
+    [Theory]
+    [InlineData(@"Data\meshes\actors\character\character assets")]
+    [InlineData(@"data/meshes/actors/character/character assets/")]
+    [InlineData(@".\meshes\actors\character\character assets")]
+    [InlineData(@"./Meshes//Actors\\Character/character assets\")]
+    public void An_output_path_with_data_prefix_slashes_or_doubled_separators_still_matches(string outputPath)
+    {
+        AddLookFile($@"{SliderSets}\Body.osp", Osp("Body Hands", "Body", outputPath, "femalehands"), "Base Fixes");
+        AddLookFile(HandsTri, [5], mod: "Stats Overhaul");
+
+        var result = Copy(Need(HandsTri));
+
+        Assert.Equal(1, result.BodySlideOutputs);
+        Assert.Empty(_log.Warnings);
+    }
+
+    [Fact]
+    public void A_data_prefixed_output_path_is_found_by_the_look_mod_rule_too()
+    {
+        AddLookFile(@"Meshes\Armor\Fancy\Fancy_go.nif", Nif());
+        AddLookFile($@"{SliderSets}\Fancy.osp", Osp("Fancy Set", "Fancy", @"Data\meshes\armor\fancy", "Fancy_go"));
+        AddLookFile(@"Meshes\Armor\Fancy\Fancy_go.nif", [9], mod: "Base Fixes");
+
+        Copy(new AssetNeed(@"Meshes\Armor\Fancy\Fancy_go.nif", "ArmorIronCuirass", Source("Look.esp", "Disabled Looks", 5)));
+
+        Assert.False(InForward(@"Meshes\Armor\Fancy\Fancy_go.nif"));
+        Assert.True(InForward($@"{SliderSets}\Fancy.osp"));
+    }
+
+    [Fact]
+    public void A_tri_the_set_did_not_write_while_its_mesh_is_built_is_a_normal_missing_asset()
+    {
+        AddBodyProject();
+        AddLookFile($@"{HandsFolder}\femalehands.nif", [1], mod: "Stats Overhaul");
+
+        var result = Copy(Need(HandsTri));
+
+        Assert.Equal(1, result.Missing);
+        Assert.Equal(0, result.BodySlideOutputs);
+        var warning = Assert.Single(_log.Warnings);
+        Assert.DoesNotContain("Build it with BodySlide", warning);
+        Assert.Contains("no MO2 mod or vanilla archive has it", warning);
+    }
+
+    [Fact]
+    public void The_bodyslide_count_includes_meshes_of_the_look_mod_rule_once()
+    {
+        AddLookFile(@"Meshes\Armor\Fancy\Fancy_go.nif", Nif());
+        AddLookFile($@"{SliderSets}\Fancy.osp", Osp("Fancy Set", "Fancy", @"meshes\armor\fancy", "Fancy_go"));
+        AddLookFile(@"Meshes\Armor\Fancy\Fancy_go.nif", [9], mod: "Base Fixes");
+        AddBodyProject();
+        AddLookFile(HandsTri, [5], mod: "Stats Overhaul");
+        var source = Source("Look.esp", "Disabled Looks", 5);
+
+        var result = Copy(
+            new AssetNeed(@"Meshes\Armor\Fancy\Fancy_go.nif", "ArmorIronCuirass", source),
+            new AssetNeed(@"meshes/armor/fancy/fancy_go.nif", "ArmorIronBoots", source),
+            Need(HandsTri));
+
+        Assert.Equal(2, result.BodySlideOutputs);
+    }
+
+    [Fact]
+    public void A_missing_path_with_a_same_named_file_in_the_look_mod_is_warned_about_as_a_packaging_error()
+    {
+        AddLookFile(@"meshes\armor\errantknight\x.tri", [1]);
+
+        var result = Copy(Need(@"meshes\armor\knighterrant\x.tri"));
+
+        Assert.Equal(1, result.Missing);
+        Assert.Equal(0, result.Copied);
+        Assert.False(InForward(@"meshes\armor\knighterrant\x.tri"));
+        Assert.False(InForward(@"meshes\armor\errantknight\x.tri"));
+        var warning = Assert.Single(_log.Warnings);
+        Assert.Contains("ArmorGloves", warning);
+        Assert.Contains("Look.esp", warning);
+        Assert.Contains(@"meshes\armor\knighterrant\x.tri", warning);
+        Assert.Contains(@"meshes\armor\errantknight\x.tri", warning);
+        Assert.Contains("packaging error", warning);
+        Assert.Contains("with or without the patcher", warning);
+    }
+
+    [Fact]
+    public void A_missing_path_without_a_same_named_file_keeps_the_plain_missing_warning()
+    {
+        AddLookFile(@"meshes\armor\errantknight\other.tri", [1]);
+
+        Copy(Need(@"meshes\armor\knighterrant\x.tri"));
+
+        var warning = Assert.Single(_log.Warnings);
+        Assert.Contains("no MO2 mod or vanilla archive has it", warning);
+        Assert.DoesNotContain("packaging error", warning);
     }
 
     [Fact]
